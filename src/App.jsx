@@ -1,218 +1,355 @@
-import React, { useState, useRef } from 'react';
-import { UploadCloud, Save, Layers, AlertCircle } from 'lucide-react';
-import IfcViewerComponent from './IfcViewer';
+import { useRef, useState } from "react";
+import {
+  AlertCircle,
+  Calculator,
+  Download,
+  Layers,
+  PackageSearch,
+  Save,
+  UploadCloud,
+} from "lucide-react";
+import IfcViewerComponent from "./IfcViewer";
+import CostCalculator from "./tools/cost-calculator/CostCalculator";
+import PropertyBatchEditor from "./tools/property-batch-editor/PropertyBatchEditor";
+
+const sampleIfcUrl = new URL("../sample.ifc", import.meta.url).href;
 
 function App() {
-  const [fileContent, setFileContent] = useState(null); // ArrayBuffer
-  const [rawText, setRawText] = useState(""); // String representation for saving
+  const fileInputRef = useRef(null);
+  const [activeTool, setActiveTool] = useState("viewer");
+  const [fileContent, setFileContent] = useState(null);
+  const [rawText, setRawText] = useState("");
   const [fileName, setFileName] = useState("");
   const [isDragging, setIsDragging] = useState(false);
-  
   const [selectedProps, setSelectedProps] = useState(null);
   const [editedType, setEditedType] = useState("");
+  const [message, setMessage] = useState("");
+  const [isModelLoading, setIsModelLoading] = useState(false);
 
-  const fileInputRef = useRef(null);
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processFile(e.dataTransfer.files[0]);
+  const loadIfcData = ({
+    fileName: nextFileName,
+    rawText: nextRawText,
+    arrayBuffer,
+  }) => {
+    if (!nextFileName.toLowerCase().endsWith(".ifc")) {
+      setIsModelLoading(false);
+      setMessage("Upload an .ifc file.");
+      return;
     }
-  };
 
-  const handleFileSelect = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      processFile(e.target.files[0]);
-    }
+    setFileName(nextFileName);
+    setSelectedProps(null);
+    setEditedType("");
+    setFileContent(null);
+    setRawText(nextRawText);
+    setIsModelLoading(true);
+    setMessage("Loading IFC model...");
+    setFileContent(arrayBuffer);
   };
 
   const processFile = (file) => {
-    if (!file.name.toLowerCase().endsWith('.ifc')) {
-      alert("Please upload a valid .ifc file");
+    if (!file.name.toLowerCase().endsWith(".ifc")) {
+      setIsModelLoading(false);
+      setMessage("Upload an .ifc file.");
       return;
     }
-    setFileName(file.name);
-    
-    // Read as text for editing
-    const textReader = new FileReader();
-    textReader.onload = (e) => setRawText(e.target.result);
-    textReader.readAsText(file);
 
-    // Read as ArrayBuffer for web-ifc
-    const bufferReader = new FileReader();
-    bufferReader.onload = (e) => setFileContent(e.target.result);
-    bufferReader.readAsArrayBuffer(file);
+    const textReader = new FileReader();
+    textReader.onload = (event) => {
+      const nextRawText = event.target.result || "";
+      const bufferReader = new FileReader();
+      bufferReader.onload = (bufferEvent) => {
+        loadIfcData({
+          fileName: file.name,
+          rawText: nextRawText,
+          arrayBuffer: bufferEvent.target.result,
+        });
+      };
+      bufferReader.readAsArrayBuffer(file);
+    };
+    textReader.readAsText(file);
+  };
+
+  const handleLoadSample = async () => {
+    setIsModelLoading(true);
+    setMessage("Loading sample.ifc...");
+
+    try {
+      const response = await fetch(sampleIfcUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const rawText = new TextDecoder("utf-8").decode(arrayBuffer);
+      loadIfcData({
+        fileName: "sample.ifc",
+        rawText,
+        arrayBuffer,
+      });
+    } catch (error) {
+      setIsModelLoading(false);
+      setMessage(`Could not load sample.ifc: ${error.message || error}`);
+    }
+  };
+
+  const handleFileSelect = (event) => {
+    const file = event.target.files?.[0];
+    if (file) processFile(file);
+    event.target.value = "";
+  };
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) processFile(file);
   };
 
   const handleSelectElement = (props) => {
     setSelectedProps(props);
-    if (props && props.type) {
-      setEditedType(props.type);
-    } else {
-      setEditedType("");
-    }
+    setEditedType(props?.type || "");
   };
 
-  const handleSave = () => {
-    if (!selectedProps || !editedType) return;
-    
-    // Simple text replacement approach for modifying IFC
-    // We look for the exact line containing the ExpressID and replace the old type with the new type.
+  const handleSaveType = () => {
+    if (!selectedProps || !editedType || !rawText) return;
+
     const expressId = selectedProps.expressID;
     const oldType = selectedProps.type;
-    
-    if (oldType === editedType) {
-      alert("No changes made.");
+    const nextType = editedType.trim().toUpperCase();
+
+    if (!nextType || oldType === nextType) {
+      setMessage("No type change to apply.");
       return;
     }
 
-    // Split text by lines
     const lines = rawText.split(/\r?\n/);
-    
-    // Find the line that starts with #expressId=
-    const lineIndex = lines.findIndex(line => line.startsWith(`#${expressId}=`));
-    
-    if (lineIndex !== -1) {
-      // Replace the exact type string on that specific line
-      // e.g. #123= IFCCURTAINWALL(...) -> #123= IFCWALL(...)
-      lines[lineIndex] = lines[lineIndex].replace(oldType, editedType.toUpperCase());
-      const newText = lines.join('\n');
-      setRawText(newText);
-      
-      // Update selected props to reflect change
-      setSelectedProps({...selectedProps, type: editedType.toUpperCase()});
-      alert(`Successfully updated ExpressID #${expressId} from ${oldType} to ${editedType.toUpperCase()}`);
-    } else {
-      alert("Could not find the element in the raw IFC text.");
+    const lineIndex = lines.findIndex((line) =>
+      line.trimStart().startsWith(`#${expressId}=`)
+    );
+
+    if (lineIndex === -1) {
+      setMessage(`Could not find IFC line #${expressId}.`);
+      return;
     }
+
+    lines[lineIndex] = lines[lineIndex].replace(
+      new RegExp(`^(\\s*#${expressId}\\s*=\\s*)${oldType}\\b`),
+      `$1${nextType}`
+    );
+    setRawText(lines.join("\n"));
+    setSelectedProps({ ...selectedProps, type: nextType });
+    setMessage(`Updated #${expressId} from ${oldType} to ${nextType}.`);
   };
 
   const handleExport = () => {
     if (!rawText) return;
-    const blob = new Blob([rawText], { type: 'text/plain' });
+
+    const blob = new Blob([rawText], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `modified_${fileName}`;
-    a.click();
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `modified_${fileName || "model.ifc"}`;
+    link.click();
     URL.revokeObjectURL(url);
   };
 
+  if (activeTool === "batch") {
+    return (
+      <>
+        <ToolSwitcher activeTool={activeTool} setActiveTool={setActiveTool} />
+        <PropertyBatchEditor />
+      </>
+    );
+  }
+
+  if (activeTool === "cost") {
+    return (
+      <>
+        <ToolSwitcher activeTool={activeTool} setActiveTool={setActiveTool} />
+        <CostCalculator />
+      </>
+    );
+  }
+
   return (
-    <div className="app-container">
-      {/* Upload Overlay */}
+    <main className="app-container">
+      <ToolSwitcher activeTool={activeTool} setActiveTool={setActiveTool} />
+
       {!fileContent && (
-        <div 
+        <section
           className="upload-overlay"
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
         >
-          <div 
-            className={`glass-panel upload-box ${isDragging ? 'dragging' : ''}`}
+          <button
+            type="button"
+            className={`glass-panel upload-box ${isDragging ? "dragging" : ""}`}
             onClick={() => fileInputRef.current?.click()}
           >
             <UploadCloud className="upload-icon" />
-            <h2>Upload IFC File</h2>
-            <p style={{color: 'var(--text-secondary)'}}>
-              Drag and drop your file here, or click to browse.
-            </p>
-            <input 
-              type="file" 
-              accept=".ifc" 
-              style={{display: 'none'}} 
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-            />
-          </div>
-        </div>
+            <span>Upload IFC File</span>
+            <small>Drag and drop a model here, or click to browse.</small>
+          </button>
+          <button
+            type="button"
+            className="sample-button"
+            onClick={handleLoadSample}
+          >
+            Load sample.ifc
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".ifc"
+            onChange={handleFileSelect}
+            className="visually-hidden"
+          />
+        </section>
       )}
 
-      {/* 3D Viewer Area */}
-      <div className="viewer-container">
-        <div className="glass-panel header">
+      <section className="viewer-container">
+        <header className="glass-panel header">
           <Layers size={24} color="var(--accent-color)" />
-          <h1>IFC Web Editor</h1>
-        </div>
-        {fileContent && (
-          <IfcViewerComponent 
-            fileContent={fileContent} 
-            onSelectElement={handleSelectElement} 
+          <div>
+            <h1>IFC Web Editor</h1>
+            <p>{fileName || "No model loaded"}</p>
+          </div>
+        </header>
+        {fileContent ? (
+          <IfcViewerComponent
+            fileContent={fileContent}
+            onSelectElement={handleSelectElement}
+            onLoadStart={() => setIsModelLoading(true)}
+            onLoadSuccess={() => {
+              setIsModelLoading(false);
+              setMessage(`Loaded ${fileName}`);
+            }}
+            onLoadError={(error) => {
+              setIsModelLoading(false);
+              setMessage(error);
+            }}
+            onSelectionMiss={() => setMessage("No IFC element found at that cursor position.")}
           />
+        ) : (
+          <div className="viewer-empty">
+            <PackageSearch size={48} />
+          </div>
         )}
-      </div>
+        {isModelLoading && (
+          <div className="loading-overlay">
+            <div className="loader" />
+            <p>Preparing IFC geometry...</p>
+          </div>
+        )}
+      </section>
 
-      {/* Properties Sidebar */}
-      <div className="properties-sidebar">
+      <aside className="properties-sidebar">
         <div className="sidebar-header">
-          <h3>Properties</h3>
-          {selectedProps && <span style={{fontSize: '0.8rem', background: 'var(--accent-color)', padding: '2px 8px', borderRadius: '12px'}}>#{selectedProps.expressID}</span>}
+          <div>
+            <h2>Properties</h2>
+            <p>{selectedProps ? `ExpressID #${selectedProps.expressID}` : "Select an element"}</p>
+          </div>
+          <button type="button" onClick={() => fileInputRef.current?.click()}>
+            <UploadCloud size={18} />
+          </button>
         </div>
-        
+
         <div className="properties-list">
           {!selectedProps ? (
-            <div style={{textAlign: 'center', color: 'var(--text-secondary)', marginTop: '40px'}}>
-              <AlertCircle size={48} style={{opacity: 0.5, marginBottom: '16px'}} />
-              <p>Click on an element in the 3D viewer to see and edit its properties.</p>
+            <div className="empty-properties">
+              <AlertCircle size={40} />
+              <p>Click an element in the 3D model to inspect its IFC data.</p>
             </div>
           ) : (
             <>
-              <div className="property-item">
-                <span className="property-label">IFC Entity Type (Editable)</span>
-                <input 
-                  type="text" 
+              <label className="property-item">
+                <span className="property-label">IFC Entity Type</span>
+                <input
+                  type="text"
                   className="property-input"
                   value={editedType}
-                  onChange={(e) => setEditedType(e.target.value.toUpperCase())}
+                  onChange={(event) =>
+                    setEditedType(event.target.value.toUpperCase())
+                  }
                 />
-              </div>
-              <div className="property-item" style={{marginTop: '12px'}}>
-                <button className="btn btn-primary" onClick={handleSave}>
-                  Apply Change
-                </button>
-              </div>
-              
-              <div style={{height: '1px', background: 'var(--glass-border)', margin: '16px 0'}}></div>
-              <h4 style={{fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '8px'}}>Raw Attributes</h4>
-              
-              {Object.keys(selectedProps).map(key => {
-                if (key === 'type' || key === 'expressID') return null;
-                return (
-                  <div className="property-item" key={key}>
+              </label>
+              <button type="button" className="btn btn-primary" onClick={handleSaveType}>
+                <Save size={18} />
+                Apply Type Change
+              </button>
+              <div className="property-divider" />
+              {Object.entries(selectedProps)
+                .filter(([key]) => key !== "type" && key !== "expressID")
+                .map(([key, value]) => (
+                  <label className="property-item" key={key}>
                     <span className="property-label">{key}</span>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       className="property-input"
-                      value={typeof selectedProps[key] === 'object' ? JSON.stringify(selectedProps[key]) : String(selectedProps[key])}
+                      value={
+                        typeof value === "object"
+                          ? JSON.stringify(value)
+                          : String(value ?? "")
+                      }
                       disabled
                     />
-                  </div>
-                );
-              })}
+                  </label>
+                ))}
             </>
           )}
         </div>
 
-        {fileContent && (
-          <div className="sidebar-footer">
-            <button className="btn btn-primary" onClick={handleExport}>
-              <Save size={20} />
-              Export IFC
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+        {message && <p className="viewer-message">{message}</p>}
+
+        <div className="sidebar-footer">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleExport}
+            disabled={!rawText}
+          >
+            <Download size={18} />
+            Export IFC
+          </button>
+        </div>
+      </aside>
+    </main>
+  );
+}
+
+function ToolSwitcher({ activeTool, setActiveTool }) {
+  return (
+    <nav className="tool-switcher" aria-label="IFC tools">
+      <button
+        type="button"
+        className={activeTool === "viewer" ? "active" : ""}
+        onClick={() => setActiveTool("viewer")}
+      >
+        <Layers size={16} />
+        IFC Viewer
+      </button>
+      <button
+        type="button"
+        className={activeTool === "batch" ? "active" : ""}
+        onClick={() => setActiveTool("batch")}
+      >
+        <PackageSearch size={16} />
+        Batch Editor
+      </button>
+      <button
+        type="button"
+        className={activeTool === "cost" ? "active" : ""}
+        onClick={() => setActiveTool("cost")}
+      >
+        <Calculator size={16} />
+        Cost Calculator
+      </button>
+    </nav>
   );
 }
 

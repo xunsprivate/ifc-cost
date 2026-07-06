@@ -22,7 +22,6 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background-image: radial-gradient(circle at 50% 0%, #1e2433 0%, var(--bg-dark) 60%);
 }
 
 #root {
@@ -35,6 +34,63 @@ body {
   width: 100%;
   height: 100vh;
   position: relative;
+  overflow: hidden;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.tool-switcher {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: calc(100vw - 24px);
+  min-height: 42px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: rgba(15, 17, 21, 0.78);
+  backdrop-filter: blur(14px);
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.tool-switcher button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tool-switcher button.active {
+  color: #ffffff;
+  background: var(--accent-color);
+}
+
+.batch-editor,
+.cost-calculator {
+  height: 100vh;
+  overflow: hidden;
+  padding-top: 64px;
 }
 
 /* Glassmorphism Panels */
@@ -70,6 +126,17 @@ body {
   border: 2px dashed rgba(255,255,255,0.2);
   transition: all 0.3s ease;
   cursor: pointer;
+  color: var(--text-primary);
+}
+
+.upload-box span {
+  font-size: 24px;
+  font-weight: 750;
+}
+
+.upload-box small {
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 
 .upload-box:hover, .upload-box.dragging {
@@ -84,9 +151,30 @@ body {
   height: 48px;
 }
 
+.sample-button {
+  margin-top: 18px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 999px;
+  padding: 10px 18px;
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+.sample-button:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(96, 165, 250, 0.6);
+  transform: translateY(-1px);
+}
+
 /* Main Layout */
 .viewer-container {
   flex: 1;
+  min-width: 0;
   position: relative;
 }
 
@@ -111,12 +199,28 @@ body {
 .header h1 {
   font-size: 1.2rem;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
+}
+
+.header p,
+.sidebar-header p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.viewer-empty {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.12);
 }
 
 /* Right Sidebar Properties */
 .properties-sidebar {
   width: 360px;
+  min-width: 320px;
   height: 100vh;
   border-left: 1px solid var(--glass-border);
   display: flex;
@@ -132,6 +236,32 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.sidebar-header h2 {
+  font-size: 18px;
+}
+
+.sidebar-header button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.empty-properties {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  text-align: center;
 }
 
 .properties-list {
@@ -181,6 +311,19 @@ body {
 .sidebar-footer {
   padding: 24px;
   border-top: 1px solid var(--glass-border);
+}
+
+.property-divider {
+  height: 1px;
+  background: var(--glass-border);
+  margin: 6px 0;
+}
+
+.viewer-message {
+  margin: 0 24px;
+  color: var(--accent-hover);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .btn {
@@ -252,4 +395,67 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.2);
+}
+
+@media (max-width: 960px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-container {
+    height: auto;
+    min-height: 100vh;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .tool-switcher {
+    position: sticky;
+    top: 12px;
+    left: auto;
+    transform: none;
+    align-self: center;
+    margin-top: 12px;
+  }
+
+  .viewer-container {
+    min-height: 52vh;
+  }
+
+  .header {
+    top: 84px;
+    left: 16px;
+    right: 16px;
+    padding: 12px 16px;
+  }
+
+  .properties-sidebar {
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: 38vh;
+    border-left: 0;
+    border-top: 1px solid var(--glass-border);
+  }
+
+  .properties-list {
+    max-height: none;
+  }
+
+  .sidebar-footer {
+    position: sticky;
+    bottom: 0;
+    background: rgba(15, 17, 21, 0.92);
+    backdrop-filter: blur(20px);
+  }
+
+  .upload-overlay {
+    padding: 88px 16px 16px;
+    align-items: flex-start;
+  }
+
+  .upload-box {
+    width: min(100%, 440px);
+    padding: 32px 24px;
+  }
 }
