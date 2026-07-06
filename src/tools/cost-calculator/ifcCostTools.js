@@ -265,6 +265,214 @@ export function exportCostRowsCsv(rows, overrides) {
   return [header.join(","), ...lines].join("\n");
 }
 
+export function buildCostSnapshot({
+  name,
+  text,
+  targetFgk = "300",
+  overrides = {},
+}) {
+  const analysis = buildCostAnalysis(text, targetFgk);
+  const elements = new Map();
+
+  analysis.rows.forEach((row) => {
+    const uniqueId = row.elementGlobalId || `#${row.elementId}`;
+    const rate = getRowRate(row, overrides);
+    const total = row.quantityValue * rate;
+    const current = elements.get(uniqueId) || {
+      unique_id: uniqueId,
+      element_id: row.elementId,
+      category: row.elementType,
+      family: row.costGroup || row.classification || "Unclassified",
+      type: row.elementType,
+      level: row.fgk ? `FGK ${row.fgk}` : "FGK not set",
+      workset: row.classification || "No classification",
+      creator: "",
+      last_changed_by: "",
+      totalCost: 0,
+      quantityCount: 0,
+      parameters: {
+        "IFC Name": row.elementName || "",
+        "GlobalId": row.elementGlobalId || "",
+        "Cost Group": row.costGroup || "",
+        "Classification": row.classification || "",
+        "FGK": row.fgk || "",
+      },
+    };
+
+    current.totalCost += Number.isFinite(total) ? total : 0;
+    current.quantityCount += 1;
+    current.parameters[`QTO: ${row.quantitySetName} / ${row.quantityName}`] =
+      `${formatNumber(row.quantityValue)} ${row.unit}`;
+    current.parameters[`Rate: ${row.quantityName} (${row.unit})`] =
+      `${formatNumber(rate)} EUR/${row.unit}`;
+    elements.set(uniqueId, current);
+  });
+
+  const snapshotElements = Array.from(elements.values()).map((element) => ({
+    ...element,
+    parameters: {
+      ...element.parameters,
+      "Quantity Rows": element.quantityCount,
+      "Total Cost EUR": formatNumber(element.totalCost),
+    },
+  }));
+
+  return {
+    project_name: name || "IFC model",
+    timestamp: new Date().toISOString(),
+    elements: snapshotElements,
+    rows: analysis.rows,
+    summary: analysis.summary,
+    totalCost: snapshotElements.reduce((sum, element) => sum + element.totalCost, 0),
+  };
+}
+
+export function compareCostSnapshots(oldSnapshot, newSnapshot) {
+  const oldElements = new Map(
+    (oldSnapshot?.elements || []).map((element) => [element.unique_id, element])
+  );
+  const newElements = new Map(
+    (newSnapshot?.elements || []).map((element) => [element.unique_id, element])
+  );
+  const added = [];
+  const deleted = [];
+  const modified = [];
+
+  for (const [uniqueId, newElement] of newElements) {
+    if (!oldElements.has(uniqueId)) added.push(newElement);
+  }
+
+  for (const [uniqueId, oldElement] of oldElements) {
+    if (!newElements.has(uniqueId)) deleted.push(oldElement);
+  }
+
+  for (const [uniqueId, newElement] of newElements) {
+    const oldElement = oldElements.get(uniqueId);
+    if (!oldElement) continue;
+
+    const changes = compareElementFields(oldElement, newElement);
+    if (changes.length) {
+      modified.push({
+        ...newElement,
+        unique_id: uniqueId,
+        changes,
+        oldTotalCost: oldElement.totalCost,
+        newTotalCost: newElement.totalCost,
+        costDelta: newElement.totalCost - oldElement.totalCost,
+      });
+    }
+  }
+
+  const addedCost = added.reduce((sum, element) => sum + element.totalCost, 0);
+  const deletedCost = deleted.reduce((sum, element) => sum + element.totalCost, 0);
+  const modifiedDelta = modified.reduce((sum, element) => sum + element.costDelta, 0);
+
+  return {
+    projectName: newSnapshot?.project_name || oldSnapshot?.project_name || "IFC model",
+    oldTimestamp: oldSnapshot?.timestamp || "Baseline",
+    newTimestamp: newSnapshot?.timestamp || "Target",
+    added,
+    deleted,
+    modified,
+    totals: {
+      oldCost: oldSnapshot?.totalCost || 0,
+      newCost: newSnapshot?.totalCost || 0,
+      delta: (newSnapshot?.totalCost || 0) - (oldSnapshot?.totalCost || 0),
+      addedCost,
+      deletedCost,
+      modifiedDelta,
+      netElements: added.length - deleted.length,
+    },
+  };
+}
+
+export function exportCostComparisonCsv(comparison) {
+  const header = [
+    "Status",
+    "GlobalId",
+    "ElementId",
+    "IFCType",
+    "CostGroup",
+    "OldCostEUR",
+    "NewCostEUR",
+    "DeltaEUR",
+    "Changes",
+  ];
+
+  const lines = [
+    ...comparison.added.map((element) =>
+      comparisonLine("Added", null, element, element.totalCost, [])
+    ),
+    ...comparison.deleted.map((element) =>
+      comparisonLine("Deleted", element, null, -element.totalCost, [])
+    ),
+    ...comparison.modified.map((element) =>
+      comparisonLine(
+        "Modified",
+        { ...element, totalCost: element.oldTotalCost },
+        element,
+        element.costDelta,
+        element.changes
+      )
+    ),
+  ];
+
+  return [header.join(","), ...lines].join("\n");
+}
+
+function compareElementFields(oldElement, newElement) {
+  const changes = [];
+  const fields = ["category", "family", "type", "level", "workset"];
+
+  fields.forEach((field) => {
+    if ((oldElement[field] || "") !== (newElement[field] || "")) {
+      changes.push({
+        property: field.charAt(0).toUpperCase() + field.slice(1),
+        old: oldElement[field] ?? null,
+        new: newElement[field] ?? null,
+      });
+    }
+  });
+
+  const oldParameters = oldElement.parameters || {};
+  const newParameters = newElement.parameters || {};
+  Object.keys(oldParameters).forEach((name) => {
+    if (newParameters[name] === undefined) {
+      changes.push({ property: `Param: ${name}`, old: oldParameters[name], new: null });
+    } else if (String(oldParameters[name]) !== String(newParameters[name])) {
+      changes.push({
+        property: `Param: ${name}`,
+        old: oldParameters[name],
+        new: newParameters[name],
+      });
+    }
+  });
+  Object.keys(newParameters).forEach((name) => {
+    if (oldParameters[name] === undefined) {
+      changes.push({ property: `Param: ${name}`, old: null, new: newParameters[name] });
+    }
+  });
+
+  return changes;
+}
+
+function comparisonLine(status, oldElement, newElement, delta, changes) {
+  const element = newElement || oldElement;
+  return [
+    status,
+    element.unique_id,
+    element.element_id,
+    element.category,
+    element.family,
+    formatNumber(oldElement?.totalCost || 0),
+    formatNumber(newElement?.totalCost || 0),
+    formatNumber(delta),
+    changes.map((change) => `${change.property}: ${change.old ?? ""} -> ${change.new ?? ""}`).join("; "),
+  ]
+    .map(csvCell)
+    .join(",");
+}
+
 function parseIfcLines(text) {
   const records = new Map();
 
