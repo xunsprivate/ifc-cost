@@ -54,6 +54,7 @@ const DEFAULT_RATES = [
 
 export function buildCostAnalysis(text, targetFgk = "300") {
   const { records } = parseIfcLines(text);
+  const levelsByElement = buildElementLevels(records);
   const propertySets = buildPropertySets(records);
   const quantitySets = buildQuantitySets(records);
   const propertiesByElement = new Map();
@@ -132,6 +133,11 @@ export function buildCostAnalysis(text, targetFgk = "300") {
     .concat(fallbackRows)
     .map((row) => ({
       ...row,
+      ...(levelsByElement.get(row.elementId) || {
+        levelId: null,
+        level: "Unassigned",
+        levelElevation: null,
+      }),
       costGroup: row.costGroup || extractCostGroup(row.properties, row.classification),
       fgk: row.fgk || extractFgk(row.properties),
       modelRate: row.modelRate ?? extractModelRate(row.properties),
@@ -143,6 +149,7 @@ export function buildCostAnalysis(text, targetFgk = "300") {
     }))
     .sort((a, b) => {
       return (
+        String(a.level).localeCompare(String(b.level), undefined, { numeric: true }) ||
         a.elementType.localeCompare(b.elementType) ||
         String(a.costGroup).localeCompare(String(b.costGroup)) ||
         a.elementId - b.elementId ||
@@ -158,9 +165,11 @@ export function buildCostAnalysis(text, targetFgk = "300") {
 
 export function filterCostRows(rows, filters) {
   const search = normalize(filters.search);
+  const level = String(filters.level || "");
   const entity = normalize(filters.entityType);
   const unit = normalize(filters.unit);
   const costGroup = normalize(filters.costGroup);
+  const quantityName = normalize(filters.quantityName);
   const readiness = filters.readiness || "";
 
   return rows.filter((row) => {
@@ -170,6 +179,8 @@ export function filterCostRows(rows, filters) {
         row.elementType,
         row.elementGlobalId,
         row.elementName,
+        row.level,
+        row.levelElevation,
         row.quantitySetName,
         row.quantityName,
         row.costGroup,
@@ -180,9 +191,14 @@ export function filterCostRows(rows, filters) {
 
     return (
       (!search || searchable.includes(search)) &&
+      (!level ||
+        (level === "unassigned"
+          ? row.levelId === null
+          : String(row.levelId) === level)) &&
       (!entity || normalize(row.elementType).includes(entity)) &&
       (!unit || normalize(row.unit).includes(unit)) &&
       (!costGroup || normalize(row.costGroup).includes(costGroup)) &&
+      (!quantityName || normalize(row.quantityName).includes(quantityName)) &&
       (!readiness || row.readiness.level === readiness)
     );
   });
@@ -226,6 +242,8 @@ export function exportCostRowsCsv(rows, overrides) {
     "GlobalId",
     "IFCType",
     "ElementName",
+    "Level",
+    "LevelElevation",
     "CostGroup",
     "Classification",
     "FGK",
@@ -246,6 +264,8 @@ export function exportCostRowsCsv(rows, overrides) {
       row.elementGlobalId,
       row.elementType,
       row.elementName,
+      row.level,
+      row.levelElevation ?? "",
       row.costGroup,
       row.classification,
       row.fgk,
@@ -284,7 +304,7 @@ export function buildCostSnapshot({
       category: row.elementType,
       family: row.costGroup || row.classification || "Unclassified",
       type: row.elementType,
-      level: row.fgk ? `FGK ${row.fgk}` : "FGK not set",
+      level: row.level || "Unassigned",
       workset: row.classification || "No classification",
       creator: "",
       last_changed_by: "",
@@ -293,6 +313,8 @@ export function buildCostSnapshot({
       parameters: {
         "IFC Name": row.elementName || "",
         "GlobalId": row.elementGlobalId || "",
+        "Building Storey": row.level || "Unassigned",
+        "Storey Elevation": row.levelElevation ?? "",
         "Cost Group": row.costGroup || "",
         "Classification": row.classification || "",
         "FGK": row.fgk || "",
@@ -494,6 +516,88 @@ function parseIfcLines(text) {
     });
 
   return { records };
+}
+
+function buildElementLevels(records) {
+  const containedIn = new Map();
+  const parentByChild = new Map();
+  const levelsByElement = new Map();
+
+  for (const record of records.values()) {
+    if (record.type === "IFCRELCONTAINEDINSPATIALSTRUCTURE") {
+      const structureId = parseRef(record.args[5]);
+      if (structureId !== null) {
+        parseRefList(record.args[4]).forEach((elementId) => {
+          containedIn.set(elementId, structureId);
+        });
+      }
+    }
+
+    if (record.type === "IFCRELAGGREGATES" || record.type === "IFCRELNESTS") {
+      const parentId = parseRef(record.args[4]);
+      if (parentId !== null) {
+        parseRefList(record.args[5]).forEach((childId) => {
+          if (!parentByChild.has(childId)) parentByChild.set(childId, parentId);
+        });
+      }
+    }
+  }
+
+  const describeStorey = (record) => {
+    const elevation = parseNumber(record.args[9]);
+    return {
+      levelId: record.id,
+      level:
+        cleanIfcString(record.args[2]) ||
+        cleanIfcString(record.args[7]) ||
+        `Storey #${record.id}`,
+      levelElevation: Number.isFinite(elevation) ? elevation : null,
+    };
+  };
+
+  const findStorey = (startId) => {
+    const visited = new Set();
+    let currentId = startId;
+
+    while (currentId !== null && currentId !== undefined && !visited.has(currentId)) {
+      visited.add(currentId);
+      const current = records.get(currentId);
+      if (current?.type === "IFCBUILDINGSTOREY") return describeStorey(current);
+      currentId = parentByChild.get(currentId);
+    }
+
+    return null;
+  };
+
+  const resolveLevel = (elementId) => {
+    const visited = new Set();
+    let currentId = elementId;
+
+    while (currentId !== null && currentId !== undefined && !visited.has(currentId)) {
+      visited.add(currentId);
+
+      const directStorey = findStorey(currentId);
+      if (directStorey) return directStorey;
+
+      const structureId = containedIn.get(currentId);
+      if (structureId !== undefined) {
+        const containingStorey = findStorey(structureId);
+        if (containingStorey) return containingStorey;
+      }
+
+      currentId = parentByChild.get(currentId);
+    }
+
+    return null;
+  };
+
+  for (const record of records.values()) {
+    if (!isCostElement(record)) continue;
+    const level = resolveLevel(record.id);
+    if (level) levelsByElement.set(record.id, level);
+  }
+
+  return levelsByElement;
 }
 
 function buildPropertySets(records) {

@@ -4,6 +4,9 @@ import { IfcViewerAPI } from "web-ifc-viewer";
 
 const IfcViewerComponent = ({
   fileContent,
+  visibleElementIds = [],
+  isFilterActive = false,
+  focusedElementId = null,
   onSelectElement,
   onLoadStart,
   onLoadSuccess,
@@ -12,6 +15,10 @@ const IfcViewerComponent = ({
 }) => {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
+  const modelRef = useRef(null);
+  const visibleElementIdsRef = useRef(visibleElementIds);
+  const isFilterActiveRef = useRef(isFilterActive);
+  const focusedElementIdRef = useRef(focusedElementId);
   const selectHandlerRef = useRef(onSelectElement);
   const loadStartRef = useRef(onLoadStart);
   const loadSuccessRef = useRef(onLoadSuccess);
@@ -39,6 +46,28 @@ const IfcViewerComponent = ({
   }, [onSelectionMiss]);
 
   useEffect(() => {
+    visibleElementIdsRef.current = visibleElementIds;
+    isFilterActiveRef.current = isFilterActive;
+
+    if (viewerRef.current && modelRef.current) {
+      applyElementFilter(
+        viewerRef.current,
+        modelRef.current,
+        visibleElementIds,
+        isFilterActive
+      );
+    }
+  }, [visibleElementIds, isFilterActive]);
+
+  useEffect(() => {
+    focusedElementIdRef.current = focusedElementId;
+
+    if (viewerRef.current && modelRef.current) {
+      focusElement(viewerRef.current, modelRef.current, focusedElementId);
+    }
+  }, [focusedElementId]);
+
+  useEffect(() => {
     if (!containerRef.current) return;
     const containerEl = containerRef.current;
     loadStartRef.current?.();
@@ -57,8 +86,16 @@ const IfcViewerComponent = ({
     let isDisposed = false;
 
     viewer.IFC.loadIfcUrl(ifcURL, true)
-      .then(() => {
+      .then((model) => {
         if (isDisposed) return;
+        modelRef.current = model;
+        applyElementFilter(
+          viewer,
+          model,
+          visibleElementIdsRef.current,
+          isFilterActiveRef.current
+        );
+        focusElement(viewer, model, focusedElementIdRef.current);
         viewer.context.fitToFrame();
         loadSuccessRef.current?.();
       })
@@ -141,6 +178,7 @@ const IfcViewerComponent = ({
         }
         viewerRef.current.dispose();
         viewerRef.current = null;
+        modelRef.current = null;
       }
     };
   }, [fileContent]);
@@ -153,5 +191,47 @@ const IfcViewerComponent = ({
     />
   );
 };
+
+const FILTER_SUBSET_ID = "cost-filter-subset";
+
+function applyElementFilter(viewer, model, elementIds, filterActive) {
+  const manager = viewer.IFC.loader.ifcManager;
+
+  try {
+    manager.removeSubset(model.modelID, undefined, FILTER_SUBSET_ID);
+
+    if (!filterActive) {
+      model.visible = true;
+      return;
+    }
+
+    model.visible = false;
+    const ids = Array.from(new Set(elementIds || []));
+    if (!ids.length) return;
+
+    manager.createSubset({
+      modelID: model.modelID,
+      ids,
+      scene: viewer.context.getScene(),
+      removePrevious: true,
+      customID: FILTER_SUBSET_ID,
+      applyBVH: true,
+    });
+  } catch (error) {
+    model.visible = true;
+    console.warn("Could not apply IFC visibility filter", error);
+  }
+}
+
+function focusElement(viewer, model, elementId) {
+  if (elementId === null || elementId === undefined) {
+    viewer.IFC.selector.unpickIfcItems();
+    return;
+  }
+
+  viewer.IFC.selector
+    .pickIfcItemsByID(model.modelID, [Number(elementId)], true, true)
+    .catch((error) => console.warn("Could not focus IFC element", error));
+}
 
 export default IfcViewerComponent;

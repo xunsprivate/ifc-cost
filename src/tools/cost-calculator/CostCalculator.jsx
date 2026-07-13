@@ -3,12 +3,16 @@ import {
   AlertTriangle,
   Calculator,
   Download,
+  Eye,
   FileSpreadsheet,
   Filter,
   GitCompareArrows,
+  Layers,
+  RotateCcw,
   Search,
   UploadCloud,
 } from "lucide-react";
+import IfcViewerComponent from "../../IfcViewer";
 import {
   buildCostAnalysis,
   buildCostSnapshot,
@@ -25,9 +29,11 @@ const sampleIfcUrl = new URL("../../../sample.ifc", import.meta.url).href;
 
 const emptyFilters = {
   search: "",
+  level: "",
   entityType: "",
   unit: "",
   costGroup: "",
+  quantityName: "",
   readiness: "",
 };
 
@@ -38,6 +44,7 @@ function CostCalculator() {
   const [mode, setMode] = useState("estimate");
   const [fileName, setFileName] = useState("");
   const [rawText, setRawText] = useState("");
+  const [fileContent, setFileContent] = useState(null);
   const [filters, setFilters] = useState(emptyFilters);
   const [targetFgk, setTargetFgk] = useState("300");
   const [rowRates, setRowRates] = useState({});
@@ -50,6 +57,9 @@ function CostCalculator() {
   });
   const [compareSearch, setCompareSearch] = useState("");
   const [compareStatus, setCompareStatus] = useState("all");
+  const [selectedElementId, setSelectedElementId] = useState(null);
+  const [isViewerLoading, setIsViewerLoading] = useState(false);
+  const [viewerMessage, setViewerMessage] = useState("");
 
   const analysis = useMemo(
     () => buildCostAnalysis(rawText, targetFgk),
@@ -59,6 +69,29 @@ function CostCalculator() {
     () => filterCostRows(analysis.rows, filters),
     [analysis.rows, filters]
   );
+  const filterOptions = useMemo(
+    () => buildFilterOptions(analysis.rows),
+    [analysis.rows]
+  );
+  const visibleElementIds = useMemo(
+    () => Array.from(new Set(filteredRows.map((row) => row.elementId))),
+    [filteredRows]
+  );
+  const isFilterActive = Object.values(filters).some(
+    (value) => String(value).trim() !== ""
+  );
+  const activeFilterCount = Object.values(filters).filter(
+    (value) => String(value).trim() !== ""
+  ).length;
+  const selectedRows = useMemo(
+    () => analysis.rows.filter((row) => row.elementId === selectedElementId),
+    [analysis.rows, selectedElementId]
+  );
+  const selectedSummary = useMemo(
+    () => summarizeCosts(selectedRows, rowRates),
+    [selectedRows, rowRates]
+  );
+  const selectedElement = selectedRows[0] || null;
   const visibleSummary = useMemo(
     () => summarizeCosts(filteredRows, rowRates),
     [filteredRows, rowRates]
@@ -123,14 +156,20 @@ function CostCalculator() {
       return;
     }
 
-    const text = await file.text();
+    const [text, arrayBuffer] = await Promise.all([
+      file.text(),
+      file.arrayBuffer(),
+    ]);
     const nextAnalysis = buildCostAnalysis(text, targetFgk);
 
     setFileName(file.name);
     setRawText(text);
+    setFileContent(arrayBuffer);
     setFilters(emptyFilters);
     setRowRates({});
     setBulkRate("");
+    setSelectedElementId(null);
+    setViewerMessage("");
     setMessage(
       `Loaded ${nextAnalysis.summary.rows} quantity rows from ${nextAnalysis.summary.elements} cost-relevant elements.`
     );
@@ -155,13 +194,17 @@ function CostCalculator() {
       const response = await fetch(sampleIfcUrl);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      const text = await response.text();
+      const arrayBuffer = await response.arrayBuffer();
+      const text = new TextDecoder("utf-8").decode(arrayBuffer);
       const nextAnalysis = buildCostAnalysis(text, targetFgk);
       setFileName("sample.ifc");
       setRawText(text);
+      setFileContent(arrayBuffer);
       setFilters(emptyFilters);
       setRowRates({});
       setBulkRate("");
+      setSelectedElementId(null);
+      setViewerMessage("");
       setMessage(
         `Loaded sample.ifc with ${nextAnalysis.summary.rows} quantity rows.`
       );
@@ -194,6 +237,12 @@ function CostCalculator() {
 
   const updateFilter = (key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
+    setSelectedElementId(null);
+  };
+
+  const clearFilters = () => {
+    setFilters(emptyFilters);
+    setSelectedElementId(null);
   };
 
   const updateRowRate = (rowId, value) => {
@@ -215,10 +264,17 @@ function CostCalculator() {
   };
 
   const exportCsv = () => {
-    if (!analysis.rows.length) return;
+    if (!filteredRows.length) return;
 
-    const csv = exportCostRowsCsv(analysis.rows, rowRates);
-    downloadCsv(csv, `cost_calculation_${stripExtension(fileName) || "model"}.csv`);
+    const csv = exportCostRowsCsv(filteredRows, rowRates);
+    const scope = isFilterActive ? "filtered" : "full";
+    downloadCsv(
+      csv,
+      `cost_${scope}_${stripExtension(fileName) || "model"}.csv`
+    );
+    setMessage(
+      `Exported ${filteredRows.length} cost rows from ${visibleElementIds.length} elements.`
+    );
   };
 
   const exportComparisonCsv = () => {
@@ -287,7 +343,7 @@ function CostCalculator() {
                 <UploadCloud size={18} />
                 Upload IFC
               </button>
-              <button type="button" onClick={exportCsv} disabled={!analysis.rows.length}>
+              <button type="button" onClick={exportCsv} disabled={!filteredRows.length}>
                 <Download size={18} />
                 CSV
               </button>
@@ -357,8 +413,22 @@ function CostCalculator() {
       <section className="cost-workspace">
         <aside className="cost-filter-panel">
           <div className="cost-panel-heading">
-            <Filter size={18} />
-            <h2>Filters</h2>
+            <div className="cost-panel-title">
+              <Filter size={18} />
+              <h2>Filters</h2>
+              {activeFilterCount > 0 && (
+                <span className="filter-count">{activeFilterCount}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="clear-filter-button"
+              onClick={clearFilters}
+              disabled={!activeFilterCount}
+            >
+              <RotateCcw size={14} />
+              Clear
+            </button>
           </div>
 
           <label>
@@ -373,28 +443,66 @@ function CostCalculator() {
             </div>
           </label>
           <label>
-            IFC class
-            <input
-              value={filters.entityType}
-              onChange={(event) => updateFilter("entityType", event.target.value)}
-              placeholder="IFCWALL"
-            />
+            Building level
+            <select
+              value={filters.level}
+              onChange={(event) => updateFilter("level", event.target.value)}
+            >
+              <option value="">All levels</option>
+              {filterOptions.levels.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
-            Unit
-            <input
-              value={filters.unit}
-              onChange={(event) => updateFilter("unit", event.target.value)}
-              placeholder="m2, m3, St"
-            />
+            IFC class
+            <select
+              value={filters.entityType}
+              onChange={(event) => updateFilter("entityType", event.target.value)}
+            >
+              <option value="">All IFC classes</option>
+              {filterOptions.entityTypes.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
           </label>
           <label>
             Cost group
-            <input
+            <select
               value={filters.costGroup}
               onChange={(event) => updateFilter("costGroup", event.target.value)}
-              placeholder="DIN 276"
-            />
+            >
+              <option value="">All cost groups</option>
+              {filterOptions.costGroups.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Quantity
+            <select
+              value={filters.quantityName}
+              onChange={(event) => updateFilter("quantityName", event.target.value)}
+            >
+              <option value="">All quantities</option>
+              {filterOptions.quantityNames.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Unit
+            <select
+              value={filters.unit}
+              onChange={(event) => updateFilter("unit", event.target.value)}
+            >
+              <option value="">All units</option>
+              {filterOptions.units.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
           </label>
           <label>
             Readiness
@@ -483,11 +591,97 @@ function CostCalculator() {
             </div>
           )}
 
+          <section className="cost-model-panel" aria-label="Filtered IFC model">
+            <div className="cost-model-heading">
+              <div>
+                <Layers size={18} />
+                <div>
+                  <strong>IFC model + cost view</strong>
+                  <small>
+                    Filters control both the model visibility and the cost rows.
+                    Click a model element or table row to connect them.
+                  </small>
+                </div>
+              </div>
+              <div className="cost-model-stats">
+                <span>
+                  <Eye size={15} />
+                  {isFilterActive
+                    ? `${visibleElementIds.length} filtered elements`
+                    : "Full model"}
+                </span>
+                {selectedElementId !== null && (
+                  <span>Selected #{selectedElementId}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="cost-viewer-canvas">
+              <IfcViewerComponent
+                fileContent={fileContent}
+                visibleElementIds={visibleElementIds}
+                isFilterActive={isFilterActive}
+                focusedElementId={selectedElementId}
+                onSelectElement={(props) => {
+                  setSelectedElementId(props?.expressID ?? null);
+                  if (props?.expressID) {
+                    setViewerMessage(`Selected IFC element #${props.expressID}.`);
+                  }
+                }}
+                onLoadStart={() => {
+                  setIsViewerLoading(true);
+                  setViewerMessage("Preparing IFC geometry...");
+                }}
+                onLoadSuccess={() => {
+                  setIsViewerLoading(false);
+                  setViewerMessage("Model ready. Filters are linked to the cost table.");
+                }}
+                onLoadError={(error) => {
+                  setIsViewerLoading(false);
+                  setViewerMessage(error);
+                }}
+                onSelectionMiss={() => {
+                  setSelectedElementId(null);
+                  setViewerMessage("No IFC element found at that position.");
+                }}
+              />
+              {isViewerLoading && (
+                <div className="cost-viewer-loading">
+                  <div className="loader" />
+                  <span>Preparing IFC geometry...</span>
+                </div>
+              )}
+            </div>
+
+            <div className="cost-selection-bar">
+              {selectedElement ? (
+                <>
+                  <span>
+                    <strong>#{selectedElement.elementId} {selectedElement.elementType}</strong>
+                    {selectedElement.level} · {selectedElement.elementName || "Unnamed element"}
+                  </span>
+                  <span>
+                    <strong>{formatCurrency(selectedSummary.total)}</strong>
+                    {selectedSummary.items} cost row{selectedSummary.items === 1 ? "" : "s"}
+                  </span>
+                </>
+              ) : selectedElementId !== null ? (
+                <span>
+                  <strong>#{selectedElementId}</strong>
+                  This model element has no cost row in the current analysis.
+                </span>
+              ) : (
+                <span>{viewerMessage || "Select an element to see its linked cost."}</span>
+              )}
+            </div>
+          </section>
+
           <div className="cost-table-wrap">
             <table className="cost-table">
               <thead>
                 <tr>
                   <th>Element</th>
+                  <th>Level</th>
                   <th>Classification</th>
                   <th>Quantity</th>
                   <th>Rate</th>
@@ -501,11 +695,30 @@ function CostCalculator() {
                   const rowTotal = row.quantityValue * rate;
 
                   return (
-                    <tr key={row.rowId}>
+                    <tr
+                      key={row.rowId}
+                      className={selectedElementId === row.elementId ? "is-selected" : ""}
+                      onClick={() => setSelectedElementId(row.elementId)}
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedElementId(row.elementId);
+                        }
+                      }}
+                    >
                       <td>
                         <code>#{row.elementId}</code>
                         <span>{row.elementType}</span>
                         <small>{row.elementName || row.elementGlobalId || "-"}</small>
+                      </td>
+                      <td>
+                        <span>{row.level}</span>
+                        <small>
+                          {row.levelElevation === null
+                            ? "Elevation not set"
+                            : `${formatQuantity(row.levelElevation)} m`}
+                        </small>
                       </td>
                       <td>
                         <span>{row.costGroup || row.classification || "-"}</span>
@@ -766,6 +979,37 @@ function SnapshotSlot({ title, fileName, onUpload, onSample }) {
       </div>
     </div>
   );
+}
+
+function buildFilterOptions(rows) {
+  const uniqueValues = (key) =>
+    Array.from(
+      new Set(rows.map((row) => String(row[key] || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  const levelMap = new Map();
+  rows.forEach((row) => {
+    const value = row.levelId === null ? "unassigned" : String(row.levelId);
+    if (levelMap.has(value)) return;
+
+    const elevation = Number.isFinite(row.levelElevation)
+      ? ` · ${formatQuantity(row.levelElevation)} m`
+      : "";
+    levelMap.set(value, {
+      value,
+      label: `${row.level || "Unassigned"}${elevation}`,
+    });
+  });
+
+  return {
+    levels: Array.from(levelMap.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { numeric: true })
+    ),
+    entityTypes: uniqueValues("elementType"),
+    costGroups: uniqueValues("costGroup"),
+    quantityNames: uniqueValues("quantityName"),
+    units: uniqueValues("unit"),
+  };
 }
 
 function downloadCsv(csv, fileName) {
