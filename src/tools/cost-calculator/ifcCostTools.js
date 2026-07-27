@@ -111,6 +111,22 @@ const DEFAULT_RATE_LIBRARY = [
     ["curtain-wall-area", "Curtain wall", "IFCCURTAINWALL", "m2", "NetSideArea", 480],
     ["railing-length", "Railing", "IFCRAILING", "m", "Length", 320],
     ["space-area", "Space", "IFCSPACE", "m2", "NetFloorArea", 0],
+    [
+      "stair-count-fallback",
+      "Stair fallback per item",
+      "IFCSTAIR",
+      "St",
+      "ElementCount",
+      5000,
+    ],
+    [
+      "railing-count-fallback",
+      "Railing fallback per item",
+      "IFCRAILING",
+      "St",
+      "ElementCount",
+      2500,
+    ],
   ].map(([id, label, elementType, unit, quantityName, rate]) => ({
     id,
     label,

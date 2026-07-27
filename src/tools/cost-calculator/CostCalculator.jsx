@@ -43,6 +43,10 @@ import "./cost-calculator.css";
 const sampleIfcUrl = new URL("../../../sample.ifc", import.meta.url).href;
 const RATE_LIBRARY_STORAGE_KEY = "ifc-cost-rate-library-v1";
 const CLASSIFICATION_MAPPING_STORAGE_KEY = "ifc-cost-classification-mappings-v1";
+const RATE_LIBRARY_MIGRATION_IDS = new Set([
+  "stair-count-fallback",
+  "railing-count-fallback",
+]);
 
 const emptyFilters = {
   search: "",
@@ -1939,7 +1943,14 @@ function readRateLibrary() {
   try {
     const saved = JSON.parse(localStorage.getItem(RATE_LIBRARY_STORAGE_KEY));
     const normalized = normalizeRateLibrary(saved);
-    return normalized.length ? normalized : createDefaultRateLibrary();
+    if (!normalized.length) return createDefaultRateLibrary();
+
+    const savedIds = new Set(normalized.map((entry) => entry.id));
+    const additions = createDefaultRateLibrary().filter(
+      (entry) =>
+        RATE_LIBRARY_MIGRATION_IDS.has(entry.id) && !savedIds.has(entry.id)
+    );
+    return normalized.concat(additions);
   } catch {
     return createDefaultRateLibrary();
   }

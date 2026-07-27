@@ -123,6 +123,69 @@ test("pricing status filters react to manual rate overrides", () => {
   );
 });
 
+test("fallback count rules price stairs and railings without QTO dimensions", () => {
+  const rates = createDefaultRateLibrary();
+  const priced = applyCostRules(
+    [
+      makeRow({
+        rowId: "stair-fallback",
+        elementId: 20,
+        elementType: "IFCSTAIR",
+        quantitySetId: null,
+        quantitySetName: "Missing QTO",
+        quantityId: null,
+        quantityName: "ElementCount",
+        quantityType: "IFCQUANTITYCOUNT",
+        quantityValue: 1,
+        unit: "St",
+        fallback: true,
+      }),
+      makeRow({
+        rowId: "railing-fallback",
+        elementId: 21,
+        elementType: "IFCRAILING",
+        quantitySetId: null,
+        quantitySetName: "Missing QTO",
+        quantityId: null,
+        quantityName: "ElementCount",
+        quantityType: "IFCQUANTITYCOUNT",
+        quantityValue: 1,
+        unit: "St",
+        fallback: true,
+      }),
+    ],
+    rates
+  );
+
+  const stair = priced.find((row) => row.elementType === "IFCSTAIR");
+  const railing = priced.find((row) => row.elementType === "IFCRAILING");
+
+  assert.equal(stair.rateRuleId, "stair-count-fallback");
+  assert.equal(getRowRate(stair), 5000);
+  assert.equal(railing.rateRuleId, "railing-count-fallback");
+  assert.equal(getRowRate(railing), 2500);
+});
+
+test("railing length remains preferred when the IFC provides it", () => {
+  const [railing] = applyCostRules(
+    [
+      makeRow({
+        rowId: "railing-length",
+        elementId: 22,
+        elementType: "IFCRAILING",
+        quantityName: "Length",
+        quantityType: "IFCQUANTITYLENGTH",
+        quantityValue: 8,
+        unit: "m",
+      }),
+    ],
+    createDefaultRateLibrary()
+  );
+
+  assert.equal(railing.rateRuleId, "railing-length");
+  assert.equal(getRowRate(railing), 320);
+});
+
 function makeRow(overrides = {}) {
   return {
     rowId: "wall-area",
