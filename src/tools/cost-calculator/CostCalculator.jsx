@@ -4,6 +4,8 @@ import {
   BarChart3,
   BookOpen,
   Calculator,
+  ChevronDown,
+  ChevronUp,
   Download,
   Eye,
   FileSpreadsheet,
@@ -81,6 +83,13 @@ function CostCalculator() {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [isViewerLoading, setIsViewerLoading] = useState(false);
   const [viewerMessage, setViewerMessage] = useState("");
+  const [expandedPanels, setExpandedPanels] = useState({
+    filters: true,
+    breakdown: false,
+    model: true,
+    element: true,
+    workItems: true,
+  });
 
   useEffect(() => {
     try {
@@ -140,10 +149,6 @@ function CostCalculator() {
   const selectedRows = useMemo(
     () => pricedRows.filter((row) => row.elementId === selectedElementId),
     [pricedRows, selectedElementId]
-  );
-  const selectedSummary = useMemo(
-    () => summarizeCosts(selectedRows, rowRates),
-    [selectedRows, rowRates]
   );
   const selectedElement = selectedRows[0] || null;
   const visibleSummary = useMemo(
@@ -312,6 +317,18 @@ function CostCalculator() {
   const updateFilter = (key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
     setSelectedElementId(null);
+  };
+
+  const togglePanel = (panel) => {
+    setExpandedPanels((current) => ({
+      ...current,
+      [panel]: !current[panel],
+    }));
+    if (panel === "model" && !expandedPanels.model) {
+      window.requestAnimationFrame(() => {
+        window.dispatchEvent(new Event("resize"));
+      });
+    }
   };
 
   const clearFilters = () => {
@@ -705,9 +722,23 @@ function CostCalculator() {
       );
     }
 
+    const selectedRate = selectedElement
+      ? getRowRate(selectedElement, rowRates)
+      : 0;
+    const selectedRateSource = selectedElement
+      ? getRowRateSource(selectedElement, rowRates)
+      : "";
+    const selectedTotal = selectedElement
+      ? selectedElement.quantityValue * selectedRate
+      : 0;
+
     return (
-      <section className="cost-workspace">
-        <aside className="cost-filter-panel">
+      <section
+        className={`cost-workspace ${expandedPanels.filters ? "" : "filters-collapsed"}`}
+      >
+        <aside
+          className={`cost-filter-panel ${expandedPanels.filters ? "" : "is-collapsed"}`}
+        >
           <div className="cost-panel-heading">
             <div className="cost-panel-title">
               <Filter size={18} />
@@ -716,18 +747,29 @@ function CostCalculator() {
                 <span className="filter-count">{activeFilterCount}</span>
               )}
             </div>
-            <button
-              type="button"
-              className="clear-filter-button"
-              onClick={clearFilters}
-              disabled={!activeFilterCount}
-            >
-              <RotateCcw size={14} />
-              Clear
-            </button>
+            <div className="cost-panel-actions">
+              {expandedPanels.filters && (
+                <button
+                  type="button"
+                  className="clear-filter-button"
+                  onClick={clearFilters}
+                  disabled={!activeFilterCount}
+                >
+                  <RotateCcw size={14} />
+                  Clear
+                </button>
+              )}
+              <PanelToggle
+                expanded={expandedPanels.filters}
+                onToggle={() => togglePanel("filters")}
+                label="filters"
+              />
+            </div>
           </div>
 
-          <label>
+          {expandedPanels.filters && (
+            <div className="cost-filter-content">
+              <label>
             Search
             <div className="cost-input-with-icon">
               <Search size={16} />
@@ -737,8 +779,8 @@ function CostCalculator() {
                 placeholder="Element, QTO, cost group"
               />
             </div>
-          </label>
-          <label>
+              </label>
+              <label>
             Building level
             <select
               value={filters.level}
@@ -751,8 +793,8 @@ function CostCalculator() {
                 </option>
               ))}
             </select>
-          </label>
-          <label>
+              </label>
+              <label>
             IFC class
             <select
               value={filters.entityType}
@@ -763,8 +805,8 @@ function CostCalculator() {
                 <option key={value} value={value}>{value}</option>
               ))}
             </select>
-          </label>
-          <label>
+              </label>
+              <label>
             Cost group
             <select
               value={filters.costGroup}
@@ -775,8 +817,8 @@ function CostCalculator() {
                 <option key={value} value={value}>{value}</option>
               ))}
             </select>
-          </label>
-          <label>
+              </label>
+              <label>
             Quantity
             <select
               value={filters.quantityName}
@@ -787,8 +829,8 @@ function CostCalculator() {
                 <option key={value} value={value}>{value}</option>
               ))}
             </select>
-          </label>
-          <label>
+              </label>
+              <label>
             Unit
             <select
               value={filters.unit}
@@ -799,8 +841,8 @@ function CostCalculator() {
                 <option key={value} value={value}>{value}</option>
               ))}
             </select>
-          </label>
-          <label>
+              </label>
+              <label>
             Readiness
             <select
               value={filters.readiness}
@@ -811,9 +853,9 @@ function CostCalculator() {
               <option value="review">Review</option>
               <option value="incomplete">Incomplete</option>
             </select>
-          </label>
+              </label>
 
-          <div className="cost-kpi-grid">
+              <div className="cost-kpi-grid">
             <span>
               <strong>{analysis.summary.elements}</strong>
               model elements
@@ -838,27 +880,27 @@ function CostCalculator() {
               <strong>{analysis.summary.unmappedClassificationElements}</strong>
               classifications to map
             </span>
-          </div>
+              </div>
 
-          <button
+              <button
             type="button"
             className="manage-rate-library-button"
             onClick={() => setMode("rates")}
           >
             <BookOpen size={16} />
             Manage {activeRateCount} active rate rules
-          </button>
-          <button
+              </button>
+              <button
             type="button"
             className="manage-rate-library-button"
             onClick={() => setMode("mappings")}
           >
             <Layers size={16} />
             Manage {completedMappingCount} DIN 276 mappings
-          </button>
+              </button>
 
-          <div className="bulk-rate-panel">
-            <label>
+              <div className="bulk-rate-panel">
+                <label>
               Unit rate for filtered work items
               <input
                 value={bulkRate}
@@ -866,15 +908,17 @@ function CostCalculator() {
                 inputMode="decimal"
                 placeholder="EUR per unit"
               />
-            </label>
-            <button
+                </label>
+                <button
               type="button"
               onClick={applyBulkRate}
               disabled={!filteredRows.length || bulkRate === ""}
             >
               Apply to filtered
-            </button>
-          </div>
+                </button>
+              </div>
+            </div>
+          )}
         </aside>
 
         <section className="cost-results-panel">
@@ -922,7 +966,10 @@ function CostCalculator() {
             </div>
           )}
 
-          <section className="cost-dashboard" aria-label="Grouped cost dashboard">
+          <section
+            className={`cost-dashboard ${expandedPanels.breakdown ? "" : "is-collapsed"}`}
+            aria-label="Grouped cost dashboard"
+          >
             <div className="cost-dashboard-heading">
               <div>
                 <BarChart3 size={18} />
@@ -931,57 +978,71 @@ function CostCalculator() {
                   <small>Click a group to apply it as a filter.</small>
                 </div>
               </div>
-              <div className="cost-dashboard-tabs" aria-label="Group costs by">
-                <button
-                  type="button"
-                  className={groupBy === "level" ? "active" : ""}
-                  onClick={() => setGroupBy("level")}
-                >
-                  Level
-                </button>
-                <button
-                  type="button"
-                  className={groupBy === "costGroup" ? "active" : ""}
-                  onClick={() => setGroupBy("costGroup")}
-                >
-                  Cost group
-                </button>
-                <button
-                  type="button"
-                  className={groupBy === "elementType" ? "active" : ""}
-                  onClick={() => setGroupBy("elementType")}
-                >
-                  IFC class
-                </button>
+              <div className="cost-panel-actions">
+                {expandedPanels.breakdown && (
+                  <div className="cost-dashboard-tabs" aria-label="Group costs by">
+                    <button
+                      type="button"
+                      className={groupBy === "level" ? "active" : ""}
+                      onClick={() => setGroupBy("level")}
+                    >
+                      Level
+                    </button>
+                    <button
+                      type="button"
+                      className={groupBy === "costGroup" ? "active" : ""}
+                      onClick={() => setGroupBy("costGroup")}
+                    >
+                      Cost group
+                    </button>
+                    <button
+                      type="button"
+                      className={groupBy === "elementType" ? "active" : ""}
+                      onClick={() => setGroupBy("elementType")}
+                    >
+                      IFC class
+                    </button>
+                  </div>
+                )}
+                <PanelToggle
+                  expanded={expandedPanels.breakdown}
+                  onToggle={() => togglePanel("breakdown")}
+                  label="cost breakdown"
+                />
               </div>
             </div>
-            <div className="cost-breakdown-list">
-              {costBreakdown.slice(0, 8).map((group) => (
-                <button
-                  type="button"
-                  className="cost-breakdown-row"
-                  key={`${groupBy}-${group.value || "unclassified"}`}
-                  onClick={() => applyBreakdownFilter(group)}
-                  disabled={groupBy === "costGroup" && !group.value}
-                >
-                  <span className="cost-breakdown-label">
-                    <strong>{group.label}</strong>
-                    <small>{group.elementCount} element{group.elementCount === 1 ? "" : "s"}</small>
-                  </span>
-                  <span className="cost-breakdown-track">
-                    <span style={{ width: `${Math.max(2, group.share * 100)}%` }} />
-                  </span>
-                  <span className="cost-breakdown-value">
-                    <strong>{formatCurrency(group.total)}</strong>
-                    <small>{formatPercent(group.share)}</small>
-                  </span>
-                </button>
-              ))}
-              {!costBreakdown.length && <p>No priced work items match the filters.</p>}
-            </div>
+            {expandedPanels.breakdown && (
+              <div className="cost-breakdown-list">
+                {costBreakdown.slice(0, 8).map((group) => (
+                  <button
+                    type="button"
+                    className="cost-breakdown-row"
+                    key={`${groupBy}-${group.value || "unclassified"}`}
+                    onClick={() => applyBreakdownFilter(group)}
+                    disabled={groupBy === "costGroup" && !group.value}
+                  >
+                    <span className="cost-breakdown-label">
+                      <strong>{group.label}</strong>
+                      <small>{group.elementCount} element{group.elementCount === 1 ? "" : "s"}</small>
+                    </span>
+                    <span className="cost-breakdown-track">
+                      <span style={{ width: `${Math.max(2, group.share * 100)}%` }} />
+                    </span>
+                    <span className="cost-breakdown-value">
+                      <strong>{formatCurrency(group.total)}</strong>
+                      <small>{formatPercent(group.share)}</small>
+                    </span>
+                  </button>
+                ))}
+                {!costBreakdown.length && <p>No priced work items match the filters.</p>}
+              </div>
+            )}
           </section>
 
-          <section className="cost-model-panel" aria-label="Filtered IFC model">
+          <section
+            className={`cost-model-panel ${expandedPanels.model ? "" : "is-collapsed"}`}
+            aria-label="Filtered IFC model"
+          >
             <div className="cost-model-heading">
               <div>
                 <Layers size={18} />
@@ -993,80 +1054,188 @@ function CostCalculator() {
                   </small>
                 </div>
               </div>
-              <div className="cost-model-stats">
-                <span>
-                  <Eye size={15} />
-                  {isFilterActive
-                    ? `${visibleElementIds.length} filtered elements`
-                    : "Full model"}
-                </span>
-                {selectedElementId !== null && (
-                  <span>Selected #{selectedElementId}</span>
+              <div className="cost-panel-actions">
+                {expandedPanels.model && (
+                  <div className="cost-model-stats">
+                    <span>
+                      <Eye size={15} />
+                      {isFilterActive
+                        ? `${visibleElementIds.length} filtered elements`
+                        : "Full model"}
+                    </span>
+                    {selectedElementId !== null && (
+                      <span>Selected #{selectedElementId}</span>
+                    )}
+                  </div>
                 )}
+                <PanelToggle
+                  expanded={expandedPanels.model}
+                  onToggle={() => togglePanel("model")}
+                  label="IFC model"
+                />
               </div>
             </div>
 
             <div className="cost-viewer-canvas">
-              <IfcViewerComponent
-                fileContent={fileContent}
-                visibleElementIds={visibleElementIds}
-                isFilterActive={isFilterActive}
-                focusedElementId={selectedElementId}
-                onSelectElement={(props) => {
-                  setSelectedElementId(props?.expressID ?? null);
-                  if (props?.expressID) {
-                    setViewerMessage(`Selected IFC element #${props.expressID}.`);
-                  }
-                }}
-                onLoadStart={() => {
-                  setIsViewerLoading(true);
-                  setViewerMessage("Preparing IFC geometry...");
-                }}
-                onLoadSuccess={() => {
-                  setIsViewerLoading(false);
-                  setViewerMessage("Model ready. Filters are linked to the cost table.");
-                }}
-                onLoadError={(error) => {
-                  setIsViewerLoading(false);
-                  setViewerMessage(error);
-                }}
-                onSelectionMiss={() => {
-                  setSelectedElementId(null);
-                  setViewerMessage("No IFC element found at that position.");
-                }}
-              />
-              {isViewerLoading && (
-                <div className="cost-viewer-loading">
-                  <div className="loader" />
-                  <span>Preparing IFC geometry...</span>
-                </div>
-              )}
-            </div>
-
-            <div className="cost-selection-bar">
-              {selectedElement ? (
-                <>
-                  <span>
-                    <strong>#{selectedElement.elementId} {selectedElement.elementType}</strong>
-                    {selectedElement.level} · {selectedElement.elementName || "Unnamed element"}
-                  </span>
-                  <span>
-                    <strong>{formatCurrency(selectedSummary.total)}</strong>
-                    {selectedSummary.items} cost row{selectedSummary.items === 1 ? "" : "s"}
-                  </span>
-                </>
-              ) : selectedElementId !== null ? (
-                <span>
-                  <strong>#{selectedElementId}</strong>
-                  This model element has no cost row in the current analysis.
-                </span>
-              ) : (
-                <span>{viewerMessage || "Select an element to see its linked cost."}</span>
-              )}
+                <IfcViewerComponent
+                  fileContent={fileContent}
+                  visibleElementIds={visibleElementIds}
+                  isFilterActive={isFilterActive}
+                  focusedElementId={selectedElementId}
+                  onSelectElement={(props) => {
+                    setSelectedElementId(props?.expressID ?? null);
+                    if (props?.expressID) {
+                      setViewerMessage(`Selected IFC element #${props.expressID}.`);
+                    }
+                  }}
+                  onLoadStart={() => {
+                    setIsViewerLoading(true);
+                    setViewerMessage("Preparing IFC geometry...");
+                  }}
+                  onLoadSuccess={() => {
+                    setIsViewerLoading(false);
+                    setViewerMessage("Model ready. Filters are linked to the cost table.");
+                  }}
+                  onLoadError={(error) => {
+                    setIsViewerLoading(false);
+                    setViewerMessage(error);
+                  }}
+                  onSelectionMiss={() => {
+                    setSelectedElementId(null);
+                    setViewerMessage("No IFC element found at that position.");
+                  }}
+                />
+                {isViewerLoading && (
+                  <div className="cost-viewer-loading">
+                    <div className="loader" />
+                    <span>Preparing IFC geometry...</span>
+                  </div>
+                )}
             </div>
           </section>
 
-          <div className="cost-table-wrap">
+          <section
+            className={`cost-element-editor ${expandedPanels.element ? "" : "is-collapsed"}`}
+            aria-label="Selected element editor"
+          >
+            <div className="cost-element-editor-heading">
+              <div>
+                <Calculator size={18} />
+                <div>
+                  <strong>Element editor</strong>
+                  <small>Choose a pricing basis and enter the unit rate.</small>
+                </div>
+              </div>
+              <div className="cost-panel-actions">
+                {selectedElement && (
+                  <span className="selected-element-pill">
+                    #{selectedElement.elementId} {selectedElement.elementType}
+                  </span>
+                )}
+                <PanelToggle
+                  expanded={expandedPanels.element}
+                  onToggle={() => togglePanel("element")}
+                  label="element editor"
+                />
+              </div>
+            </div>
+
+            {expandedPanels.element && (
+              <div className="cost-element-editor-body">
+              {selectedElement ? (
+                <>
+                    <div className="cost-element-identity">
+                      <span>Selected element</span>
+                      <strong>
+                        #{selectedElement.elementId} {selectedElement.elementType}
+                      </strong>
+                      <p>{selectedElement.elementName || "Unnamed element"}</p>
+                      <small>
+                        {selectedElement.level} · {selectedElement.costGroup
+                          ? `KG ${selectedElement.costGroup}`
+                          : "DIN not mapped"}
+                      </small>
+                    </div>
+                    <label>
+                      Pricing basis
+                      <select
+                        value={selectedElement.rowId}
+                        onChange={(event) =>
+                          updateBasisOverride(
+                            selectedElement.elementId,
+                            event.target.value
+                          )
+                        }
+                      >
+                        {selectedElement.pricingCandidates.map((candidate) => (
+                          <option key={candidate.rowId} value={candidate.rowId}>
+                            {candidate.quantityName} — {formatQuantity(candidate.quantityValue)} {candidate.unit}
+                          </option>
+                        ))}
+                      </select>
+                      <small>{selectedElement.selectionReason}</small>
+                    </label>
+                    <label>
+                      Unit rate (EUR/{selectedElement.unit})
+                      <input
+                        value={rowRates[selectedElement.rowId] ?? selectedRate}
+                        onChange={(event) =>
+                          updateRowRate(selectedElement.rowId, event.target.value)
+                        }
+                        inputMode="decimal"
+                        aria-label={`Selected element unit rate for row ${selectedElement.rowId}`}
+                      />
+                      <small>{selectedRateSource}</small>
+                    </label>
+                    <div className="cost-element-total">
+                      <span>Element total</span>
+                      <strong>{formatCurrency(selectedTotal)}</strong>
+                      <small>
+                        {formatQuantity(selectedElement.quantityValue)} {selectedElement.unit}
+                        {" × "}
+                        {formatCurrency(selectedRate)}
+                      </small>
+                    </div>
+                </>
+              ) : selectedElementId !== null ? (
+                  <div className="cost-element-editor-empty">
+                    <strong>#{selectedElementId}</strong>
+                    <span>This model element has no cost row in the current analysis.</span>
+                  </div>
+              ) : (
+                  <div className="cost-element-editor-empty">
+                    <strong>Select an element</strong>
+                    <span>
+                      {viewerMessage ||
+                        "Choose a model element or a work-item row to edit its cost."}
+                    </span>
+                  </div>
+              )}
+              </div>
+            )}
+          </section>
+
+          <section
+            className={`cost-work-items-panel ${expandedPanels.workItems ? "" : "is-collapsed"}`}
+            aria-label="Element cost work items"
+          >
+            <div className="cost-work-items-heading">
+              <div>
+                <FileSpreadsheet size={18} />
+                <div>
+                  <strong>Element work items</strong>
+                  <small>{filteredRows.length} matching rows · select a row to edit it above</small>
+                </div>
+              </div>
+              <PanelToggle
+                expanded={expandedPanels.workItems}
+                onToggle={() => togglePanel("workItems")}
+                label="element work items"
+              />
+            </div>
+
+            {expandedPanels.workItems && (
+              <div className="cost-table-wrap">
             <table className="cost-table">
               <thead>
                 <tr>
@@ -1164,14 +1333,16 @@ function CostCalculator() {
                 })}
               </tbody>
             </table>
-          </div>
+              </div>
+            )}
 
-          {!filteredRows.length && (
-            <div className="cost-empty-state">
-              <Calculator size={36} />
-              <p>No cost work items match the current filters.</p>
-            </div>
-          )}
+            {expandedPanels.workItems && !filteredRows.length && (
+              <div className="cost-empty-state">
+                <Calculator size={36} />
+                <p>No cost work items match the current filters.</p>
+              </div>
+            )}
+          </section>
         </section>
       </section>
     );
@@ -1807,6 +1978,21 @@ function formatQuantity(value) {
   return new Intl.NumberFormat("de-DE", {
     maximumFractionDigits: 2,
   }).format(Number.isFinite(value) ? value : 0);
+}
+
+function PanelToggle({ expanded, onToggle, label }) {
+  return (
+    <button
+      type="button"
+      className="panel-toggle-button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      aria-label={`${expanded ? "Show less" : "Show more"} ${label}`}
+    >
+      {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+      {expanded ? "Show less" : "Show more"}
+    </button>
+  );
 }
 
 export default CostCalculator;
