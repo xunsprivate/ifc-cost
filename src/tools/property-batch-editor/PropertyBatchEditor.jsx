@@ -243,7 +243,7 @@ function PropertyBatchEditor() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.slice(0, 600).map((row) => (
+                  {filteredRows.map((row) => (
                     <tr key={row.rowId}>
                       <td>
                         <code>#{row.elementId}</code>

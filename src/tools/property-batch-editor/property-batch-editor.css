@@ -7,6 +7,7 @@
 }
 
 .batch-toolbar {
+  flex: 0 0 auto;
   min-height: 76px;
   padding: 14px 22px;
   border-bottom: 1px solid #d8d4cc;
@@ -111,6 +112,8 @@
   min-height: 0;
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .filter-panel {
@@ -200,6 +203,7 @@
 
 .results-panel {
   min-width: 0;
+  min-height: 0;
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -240,6 +244,8 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 1px solid #d8d4cc;
   border-radius: 8px;
   background: #ffffff;
@@ -300,6 +306,12 @@
 }
 
 @media (max-width: 900px) {
+  .batch-editor {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .batch-toolbar,
   .results-header {
     align-items: stretch;
@@ -308,11 +320,18 @@
 
   .batch-workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(60vh, 1fr);
+    overflow: visible;
   }
 
   .filter-panel {
     border-right: none;
     border-bottom: 1px solid #d8d4cc;
+    overflow: visible;
+  }
+
+  .results-panel {
+    min-height: 60vh;
   }
 
   .batch-edit {
