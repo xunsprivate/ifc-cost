@@ -385,13 +385,14 @@ export function applyClassificationMappings(
   };
 }
 
-export function filterCostRows(rows, filters) {
+export function filterCostRows(rows, filters, overrides = {}) {
   const search = normalize(filters.search);
   const level = String(filters.level || "");
   const entity = normalize(filters.entityType);
   const unit = normalize(filters.unit);
   const costGroup = normalize(filters.costGroup);
   const quantityName = normalize(filters.quantityName);
+  const pricingStatus = filters.pricingStatus || "";
   const readiness = filters.readiness || "";
 
   return rows.filter((row) => {
@@ -425,6 +426,10 @@ export function filterCostRows(rows, filters) {
       (!unit || normalize(row.unit).includes(unit)) &&
       (!costGroup || normalize(row.costGroup).includes(costGroup)) &&
       (!quantityName || normalize(row.quantityName).includes(quantityName)) &&
+      (!pricingStatus ||
+        (getRowRateSource(row, overrides) === "No matching rate"
+          ? "unpriced"
+          : "priced") === pricingStatus) &&
       (!readiness || row.readiness.level === readiness)
     );
   });

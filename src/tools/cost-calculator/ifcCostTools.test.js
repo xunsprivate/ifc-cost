@@ -7,6 +7,7 @@ import {
   buildCostAnalysis,
   createDefaultClassificationMappings,
   createDefaultRateLibrary,
+  filterCostRows,
   getRowRate,
   getRowRateSource,
   normalizeRateLibrary,
@@ -97,6 +98,29 @@ test("rate rules prefer the requested quantity and never import negative rates",
   assert.equal(priced.length, 1);
   assert.equal(priced[0].rowId, "wall-volume");
   assert.equal(priced[0].excludedQuantityCount, 1);
+});
+
+test("pricing status filters react to manual rate overrides", () => {
+  const rows = applyCostRules([makeRow()], []);
+  const filters = {
+    search: "",
+    level: "",
+    entityType: "",
+    unit: "",
+    costGroup: "",
+    quantityName: "",
+    pricingStatus: "unpriced",
+    readiness: "",
+  };
+
+  assert.equal(filterCostRows(rows, filters).length, 1);
+  assert.equal(filterCostRows(rows, filters, { "wall-area": "125" }).length, 0);
+  assert.equal(
+    filterCostRows(rows, { ...filters, pricingStatus: "priced" }, {
+      "wall-area": "125",
+    }).length,
+    1
+  );
 });
 
 function makeRow(overrides = {}) {

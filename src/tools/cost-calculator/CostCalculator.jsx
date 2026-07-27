@@ -51,6 +51,7 @@ const emptyFilters = {
   unit: "",
   costGroup: "",
   quantityName: "",
+  pricingStatus: "",
   readiness: "",
 };
 
@@ -129,8 +130,8 @@ function CostCalculator() {
     [analysis.rows, rateLibrary, basisOverrides]
   );
   const filteredRows = useMemo(
-    () => filterCostRows(pricedRows, filters),
-    [pricedRows, filters]
+    () => filterCostRows(pricedRows, filters, rowRates),
+    [pricedRows, filters, rowRates]
   );
   const filterOptions = useMemo(
     () => buildFilterOptions(pricedRows),
@@ -843,6 +844,17 @@ function CostCalculator() {
             </select>
               </label>
               <label>
+            Pricing status
+            <select
+              value={filters.pricingStatus}
+              onChange={(event) => updateFilter("pricingStatus", event.target.value)}
+            >
+              <option value="">All pricing statuses</option>
+              <option value="priced">Priced</option>
+              <option value="unpriced">Needs rate</option>
+            </select>
+              </label>
+              <label>
             Readiness
             <select
               value={filters.readiness}
@@ -868,10 +880,25 @@ function CostCalculator() {
               <strong>{fullSummary.excludedQuantities}</strong>
               quantities excluded
             </span>
-            <span>
+            <button
+              type="button"
+              className={filters.pricingStatus === "unpriced" ? "is-active" : ""}
+              onClick={() =>
+                updateFilter(
+                  "pricingStatus",
+                  filters.pricingStatus === "unpriced" ? "" : "unpriced"
+                )
+              }
+              aria-pressed={filters.pricingStatus === "unpriced"}
+              disabled={
+                fullSummary.unpriced === 0 &&
+                filters.pricingStatus !== "unpriced"
+              }
+              title="Show only work items that need a rate"
+            >
               <strong>{fullSummary.unpriced}</strong>
               need a rate
-            </span>
+            </button>
             <span>
               <strong>{analysis.summary.costGroupElements}</strong>
               DIN-mapped elements
