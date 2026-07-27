@@ -80,29 +80,47 @@ const IfcViewerComponent = ({
     viewer.axes.setAxes();
     viewer.IFC.setWasmPath(import.meta.env.BASE_URL);
 
-    // Load the file buffer via Blob URL
+    // Load the file buffer via Blob URL. Deferring the load prevents React
+    // development-mode cleanup from disposing a parser that has already started.
     const blob = new Blob([fileContent], { type: "application/octet-stream" });
     const ifcURL = URL.createObjectURL(blob);
     let isDisposed = false;
+    let loadStarted = false;
+    let loadSettled = false;
+    let viewerDisposed = false;
 
-    viewer.IFC.loadIfcUrl(ifcURL, true)
-      .then((model) => {
-        if (isDisposed) return;
-        modelRef.current = model;
-        applyElementFilter(
-          viewer,
-          model,
-          visibleElementIdsRef.current,
-          isFilterActiveRef.current
-        );
-        focusElement(viewer, model, focusedElementIdRef.current);
-        viewer.context.fitToFrame();
-        loadSuccessRef.current?.();
-      })
-      .catch((error) => {
-        if (isDisposed) return;
-        loadErrorRef.current?.(`Error loading IFC: ${error.message || error}`);
-      });
+    const disposeViewer = () => {
+      if (viewerDisposed) return;
+      viewerDisposed = true;
+      viewer.dispose();
+    };
+
+    const loadTimer = window.setTimeout(() => {
+      loadStarted = true;
+      viewer.IFC.loadIfcUrl(ifcURL, true)
+        .then((model) => {
+          if (isDisposed) return;
+          modelRef.current = model;
+          applyElementFilter(
+            viewer,
+            model,
+            visibleElementIdsRef.current,
+            isFilterActiveRef.current
+          );
+          focusElement(viewer, model, focusedElementIdRef.current);
+          viewer.context.fitToFrame();
+          loadSuccessRef.current?.();
+        })
+        .catch((error) => {
+          if (isDisposed) return;
+          loadErrorRef.current?.(`Error loading IFC: ${error.message || error}`);
+        })
+        .finally(() => {
+          loadSettled = true;
+          URL.revokeObjectURL(ifcURL);
+          if (isDisposed) disposeViewer();
+        });
+    }, 0);
 
     viewerRef.current = viewer;
     if (import.meta.env.DEV) {
@@ -168,18 +186,20 @@ const IfcViewerComponent = ({
 
     return () => {
       isDisposed = true;
+      window.clearTimeout(loadTimer);
       containerEl.removeEventListener("mousemove", handleMouseMove);
       containerEl.removeEventListener("click", handleClick);
       window.removeEventListener("resize", handleResize);
-      URL.revokeObjectURL(ifcURL);
-      if (viewerRef.current) {
-        if (import.meta.env.DEV && globalThis.__ifcViewer === viewerRef.current) {
-          delete globalThis.__ifcViewer;
-        }
-        viewerRef.current.dispose();
+
+      if (!loadStarted) URL.revokeObjectURL(ifcURL);
+      if (import.meta.env.DEV && globalThis.__ifcViewer === viewer) {
+        delete globalThis.__ifcViewer;
+      }
+      if (viewerRef.current === viewer) {
         viewerRef.current = null;
         modelRef.current = null;
       }
+      if (!loadStarted || loadSettled) disposeViewer();
     };
   }, [fileContent]);
 

@@ -1,6 +1,8 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BarChart3,
+  BookOpen,
   Calculator,
   Download,
   Eye,
@@ -8,24 +10,37 @@ import {
   Filter,
   GitCompareArrows,
   Layers,
+  Plus,
   RotateCcw,
   Search,
+  Trash2,
   UploadCloud,
 } from "lucide-react";
 import IfcViewerComponent from "../../IfcViewer";
 import {
+  applyClassificationMappings,
+  applyCostRules,
   buildCostAnalysis,
+  buildCostBreakdown,
   buildCostSnapshot,
   compareCostSnapshots,
+  createDefaultClassificationMappings,
+  createDefaultRateLibrary,
   exportCostComparisonCsv,
   exportCostRowsCsv,
   filterCostRows,
   getRowRate,
+  getRowRateSource,
+  mergeClassificationMappings,
+  normalizeClassificationMappings,
+  normalizeRateLibrary,
   summarizeCosts,
 } from "./ifcCostTools";
 import "./cost-calculator.css";
 
 const sampleIfcUrl = new URL("../../../sample.ifc", import.meta.url).href;
+const RATE_LIBRARY_STORAGE_KEY = "ifc-cost-rate-library-v1";
+const CLASSIFICATION_MAPPING_STORAGE_KEY = "ifc-cost-classification-mappings-v1";
 
 const emptyFilters = {
   search: "",
@@ -41,6 +56,8 @@ function CostCalculator() {
   const fileInputRef = useRef(null);
   const baselineInputRef = useRef(null);
   const targetInputRef = useRef(null);
+  const rateLibraryInputRef = useRef(null);
+  const classificationMappingInputRef = useRef(null);
   const [mode, setMode] = useState("estimate");
   const [fileName, setFileName] = useState("");
   const [rawText, setRawText] = useState("");
@@ -48,6 +65,10 @@ function CostCalculator() {
   const [filters, setFilters] = useState(emptyFilters);
   const [targetFgk, setTargetFgk] = useState("300");
   const [rowRates, setRowRates] = useState({});
+  const [basisOverrides, setBasisOverrides] = useState({});
+  const [rateLibrary, setRateLibrary] = useState(readRateLibrary);
+  const [classificationMappings, setClassificationMappings] = useState(readClassificationMappings);
+  const [groupBy, setGroupBy] = useState("level");
   const [bulkRate, setBulkRate] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState("");
@@ -61,17 +82,50 @@ function CostCalculator() {
   const [isViewerLoading, setIsViewerLoading] = useState(false);
   const [viewerMessage, setViewerMessage] = useState("");
 
-  const analysis = useMemo(
-    () => buildCostAnalysis(rawText, targetFgk),
+  useEffect(() => {
+    try {
+      localStorage.setItem(RATE_LIBRARY_STORAGE_KEY, JSON.stringify(rateLibrary));
+    } catch {
+      // The calculator remains usable when browser storage is unavailable.
+    }
+  }, [rateLibrary]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CLASSIFICATION_MAPPING_STORAGE_KEY,
+        JSON.stringify(classificationMappings)
+      );
+    } catch {
+      // The calculator remains usable when browser storage is unavailable.
+    }
+  }, [classificationMappings]);
+
+  const parsedAnalysis = useMemo(
+    () => buildCostAnalysis(rawText, targetFgk, []),
     [rawText, targetFgk]
   );
+  const analysis = useMemo(
+    () =>
+      applyClassificationMappings(
+        parsedAnalysis,
+        classificationMappings,
+        targetFgk
+      ),
+    [parsedAnalysis, classificationMappings, targetFgk]
+  );
+
+  const pricedRows = useMemo(
+    () => applyCostRules(analysis.rows, rateLibrary, basisOverrides),
+    [analysis.rows, rateLibrary, basisOverrides]
+  );
   const filteredRows = useMemo(
-    () => filterCostRows(analysis.rows, filters),
-    [analysis.rows, filters]
+    () => filterCostRows(pricedRows, filters),
+    [pricedRows, filters]
   );
   const filterOptions = useMemo(
-    () => buildFilterOptions(analysis.rows),
-    [analysis.rows]
+    () => buildFilterOptions(pricedRows),
+    [pricedRows]
   );
   const visibleElementIds = useMemo(
     () => Array.from(new Set(filteredRows.map((row) => row.elementId))),
@@ -84,8 +138,8 @@ function CostCalculator() {
     (value) => String(value).trim() !== ""
   ).length;
   const selectedRows = useMemo(
-    () => analysis.rows.filter((row) => row.elementId === selectedElementId),
-    [analysis.rows, selectedElementId]
+    () => pricedRows.filter((row) => row.elementId === selectedElementId),
+    [pricedRows, selectedElementId]
   );
   const selectedSummary = useMemo(
     () => summarizeCosts(selectedRows, rowRates),
@@ -97,9 +151,18 @@ function CostCalculator() {
     [filteredRows, rowRates]
   );
   const fullSummary = useMemo(
-    () => summarizeCosts(analysis.rows, rowRates),
-    [analysis.rows, rowRates]
+    () => summarizeCosts(pricedRows, rowRates),
+    [pricedRows, rowRates]
   );
+  const costBreakdown = useMemo(
+    () => buildCostBreakdown(filteredRows, rowRates, groupBy),
+    [filteredRows, rowRates, groupBy]
+  );
+  const activeRateCount = rateLibrary.filter((entry) => entry.active).length;
+  const completedMappingCount = classificationMappings.filter(
+    (entry) => entry.active && entry.dinGroup
+  ).length;
+  const discoveredClassificationCount = analysis.classificationCatalog.length;
   const comparison = useMemo(() => {
     if (!compareFiles.baseline?.text || !compareFiles.target?.text) return null;
 
@@ -107,15 +170,19 @@ function CostCalculator() {
       name: compareFiles.baseline.name,
       text: compareFiles.baseline.text,
       targetFgk,
+      rateLibrary,
+      classificationMappings,
     });
     const target = buildCostSnapshot({
       name: compareFiles.target.name,
       text: compareFiles.target.text,
       targetFgk,
+      rateLibrary,
+      classificationMappings,
     });
 
     return compareCostSnapshots(baseline, target);
-  }, [compareFiles, targetFgk]);
+  }, [compareFiles, targetFgk, rateLibrary, classificationMappings]);
 
   const visibleChanges = useMemo(() => {
     if (!comparison) return [];
@@ -160,18 +227,23 @@ function CostCalculator() {
       file.text(),
       file.arrayBuffer(),
     ]);
-    const nextAnalysis = buildCostAnalysis(text, targetFgk);
+    const nextAnalysis = buildCostAnalysis(text, targetFgk, classificationMappings);
+    const nextPricedRows = applyCostRules(nextAnalysis.rows, rateLibrary, {});
+    setClassificationMappings((current) =>
+      mergeClassificationMappings(current, nextAnalysis.classificationCatalog)
+    );
 
     setFileName(file.name);
     setRawText(text);
     setFileContent(arrayBuffer);
     setFilters(emptyFilters);
     setRowRates({});
+    setBasisOverrides({});
     setBulkRate("");
     setSelectedElementId(null);
     setViewerMessage("");
     setMessage(
-      `Loaded ${nextAnalysis.summary.rows} quantity rows from ${nextAnalysis.summary.elements} cost-relevant elements.`
+      `Loaded ${nextPricedRows.length} priced work items from ${nextAnalysis.summary.elements} elements; ${nextAnalysis.summary.rows} IFC quantity candidates evaluated.`
     );
   };
 
@@ -196,17 +268,19 @@ function CostCalculator() {
 
       const arrayBuffer = await response.arrayBuffer();
       const text = new TextDecoder("utf-8").decode(arrayBuffer);
-      const nextAnalysis = buildCostAnalysis(text, targetFgk);
+      const nextAnalysis = buildCostAnalysis(text, targetFgk, classificationMappings);
+      const nextPricedRows = applyCostRules(nextAnalysis.rows, rateLibrary, {});
       setFileName("sample.ifc");
       setRawText(text);
       setFileContent(arrayBuffer);
       setFilters(emptyFilters);
       setRowRates({});
+      setBasisOverrides({});
       setBulkRate("");
       setSelectedElementId(null);
       setViewerMessage("");
       setMessage(
-        `Loaded sample.ifc with ${nextAnalysis.summary.rows} quantity rows.`
+        `Loaded sample.ifc with ${nextPricedRows.length} priced work items from ${nextAnalysis.summary.rows} quantity candidates.`
       );
     } catch (error) {
       setMessage(`Could not load sample.ifc: ${error.message || error}`);
@@ -249,6 +323,131 @@ function CostCalculator() {
     setRowRates((current) => ({ ...current, [rowId]: value }));
   };
 
+  const updateBasisOverride = (elementId, rowId) => {
+    setBasisOverrides((current) => ({ ...current, [elementId]: rowId }));
+    setSelectedElementId(elementId);
+  };
+
+  const updateRateRule = (id, key, value) => {
+    setRateLibrary((current) =>
+      current.map((entry) =>
+        entry.id === id
+          ? {
+              ...entry,
+              [key]: key === "rate" ? Math.max(0, Number(value) || 0) : value,
+            }
+          : entry
+      )
+    );
+  };
+
+  const addRateRule = () => {
+    setRateLibrary((current) => [
+      ...current,
+      {
+        id: createRateRuleId(),
+        label: "New rate",
+        elementType: "IFCWALL",
+        costGroup: "",
+        unit: "m2",
+        quantityName: "NetSideArea",
+        rate: 0,
+        active: true,
+      },
+    ]);
+  };
+
+  const removeRateRule = (id) => {
+    setRateLibrary((current) => current.filter((entry) => entry.id !== id));
+  };
+
+  const resetRateLibrary = () => {
+    if (!window.confirm("Reset the rate library to the built-in defaults?")) return;
+    setRateLibrary(createDefaultRateLibrary());
+    setMessage("Rate library reset to defaults.");
+  };
+
+  const exportRateLibrary = () => {
+    downloadJson(rateLibrary, "ifc_cost_rate_library.json");
+    setMessage(`Exported ${rateLibrary.length} rate rules.`);
+  };
+
+  const importRateLibrary = async (file) => {
+    try {
+      const imported = normalizeRateLibrary(JSON.parse(await file.text()));
+      if (!imported.length) throw new Error("No valid rate rules found");
+      setRateLibrary(imported);
+      setMessage(`Imported ${imported.length} rate rules.`);
+    } catch (error) {
+      setMessage(`Could not import rate library: ${error.message || error}`);
+    }
+  };
+
+  const updateClassificationMapping = (id, key, value) => {
+    setClassificationMappings((current) =>
+      current.map((entry) =>
+        entry.id === id ? { ...entry, [key]: value } : entry
+      )
+    );
+  };
+
+  const addClassificationMapping = () => {
+    setClassificationMappings((current) => [
+      ...current,
+      {
+        id: createClassificationMappingId(),
+        sourceSystem: "Uniformat",
+        sourceCode: "",
+        label: "New classification mapping",
+        dinGroup: "",
+        active: true,
+      },
+    ]);
+  };
+
+  const removeClassificationMapping = (id) => {
+    setClassificationMappings((current) =>
+      current.filter((entry) => entry.id !== id)
+    );
+  };
+
+  const resetClassificationMappings = () => {
+    if (!window.confirm("Reset classification mappings to the built-in defaults?")) return;
+    setClassificationMappings(createDefaultClassificationMappings());
+    setMessage("Classification mappings reset to defaults.");
+  };
+
+  const exportClassificationMappings = () => {
+    downloadJson(
+      classificationMappings,
+      "ifc_uniformat_to_din276_mappings.json"
+    );
+    setMessage(`Exported ${classificationMappings.length} classification mappings.`);
+  };
+
+  const importClassificationMappings = async (file) => {
+    try {
+      const imported = normalizeClassificationMappings(
+        JSON.parse(await file.text())
+      );
+      if (!imported.length) throw new Error("No valid classification mappings found");
+      setClassificationMappings(imported);
+      setMessage(`Imported ${imported.length} classification mappings.`);
+    } catch (error) {
+      setMessage(`Could not import classification mappings: ${error.message || error}`);
+    }
+  };
+
+  const applyBreakdownFilter = (group) => {
+    const filterKey = {
+      level: "level",
+      costGroup: "costGroup",
+      elementType: "entityType",
+    }[groupBy];
+    if (!filterKey || (groupBy === "costGroup" && !group.value)) return;
+    updateFilter(filterKey, group.value);
+  };
+
   const applyBulkRate = () => {
     const rate = Number(bulkRate);
     if (!Number.isFinite(rate) || rate < 0 || !filteredRows.length) return;
@@ -260,7 +459,7 @@ function CostCalculator() {
       });
       return next;
     });
-    setMessage(`Applied ${formatCurrency(rate)} per unit to ${filteredRows.length} filtered rows.`);
+    setMessage(`Applied ${formatCurrency(rate)} per unit to ${filteredRows.length} filtered work items.`);
   };
 
   const exportCsv = () => {
@@ -273,7 +472,7 @@ function CostCalculator() {
       `cost_${scope}_${stripExtension(fileName) || "model"}.csv`
     );
     setMessage(
-      `Exported ${filteredRows.length} cost rows from ${visibleElementIds.length} elements.`
+      `Exported ${filteredRows.length} filtered work items from ${visibleElementIds.length} elements.`
     );
   };
 
@@ -299,7 +498,15 @@ function CostCalculator() {
       <section className="cost-toolbar">
         <div>
           <p className="cost-eyebrow">IFC cost planning</p>
-          <h1>{mode === "estimate" ? "Quantity Takeoff Cost Calculator" : "IFC Cost Change Tracker"}</h1>
+          <h1>
+            {mode === "estimate"
+              ? "Rule-Based IFC Cost Calculator"
+              : mode === "rates"
+                ? "Reusable Rate Library"
+                : mode === "mappings"
+                  ? "Uniformat to DIN 276 Mapping"
+                  : "IFC Cost Change Tracker"}
+          </h1>
         </div>
         <div className="cost-toolbar-actions">
           <div className="cost-mode-toggle" aria-label="Cost calculator mode">
@@ -313,6 +520,22 @@ function CostCalculator() {
             </button>
             <button
               type="button"
+              className={mode === "rates" ? "active" : ""}
+              onClick={() => setMode("rates")}
+            >
+              <BookOpen size={16} />
+              Rates
+            </button>
+            <button
+              type="button"
+              className={mode === "mappings" ? "active" : ""}
+              onClick={() => setMode("mappings")}
+            >
+              <Layers size={16} />
+              Mappings
+            </button>
+            <button
+              type="button"
               className={mode === "compare" ? "active" : ""}
               onClick={() => setMode("compare")}
             >
@@ -320,19 +543,21 @@ function CostCalculator() {
               Compare
             </button>
           </div>
-          <label>
-            Target FGK
-            <select
-              value={targetFgk}
-              onChange={(event) => setTargetFgk(event.target.value)}
-            >
-              <option value="100">100</option>
-              <option value="200">200</option>
-              <option value="300">300</option>
-              <option value="400">400</option>
-              <option value="500">500</option>
-            </select>
-          </label>
+          {(mode === "estimate" || mode === "compare") && (
+            <label>
+              Target FGK
+              <select
+                value={targetFgk}
+                onChange={(event) => setTargetFgk(event.target.value)}
+              >
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="300">300</option>
+                <option value="400">400</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+          )}
           {mode === "estimate" ? (
             <>
               <button type="button" onClick={loadSample}>
@@ -346,6 +571,51 @@ function CostCalculator() {
               <button type="button" onClick={exportCsv} disabled={!filteredRows.length}>
                 <Download size={18} />
                 CSV
+              </button>
+            </>
+          ) : mode === "rates" ? (
+            <>
+              <button type="button" onClick={addRateRule}>
+                <Plus size={18} />
+                Add rate
+              </button>
+              <button type="button" onClick={() => rateLibraryInputRef.current?.click()}>
+                <UploadCloud size={18} />
+                Import JSON
+              </button>
+              <button type="button" onClick={exportRateLibrary} disabled={!rateLibrary.length}>
+                <Download size={18} />
+                Export JSON
+              </button>
+              <button type="button" onClick={resetRateLibrary}>
+                <RotateCcw size={18} />
+                Defaults
+              </button>
+            </>
+          ) : mode === "mappings" ? (
+            <>
+              <button type="button" onClick={addClassificationMapping}>
+                <Plus size={18} />
+                Add mapping
+              </button>
+              <button
+                type="button"
+                onClick={() => classificationMappingInputRef.current?.click()}
+              >
+                <UploadCloud size={18} />
+                Import JSON
+              </button>
+              <button
+                type="button"
+                onClick={exportClassificationMappings}
+                disabled={!classificationMappings.length}
+              >
+                <Download size={18} />
+                Export JSON
+              </button>
+              <button type="button" onClick={resetClassificationMappings}>
+                <RotateCcw size={18} />
+                Defaults
               </button>
             </>
           ) : (
@@ -384,10 +654,36 @@ function CostCalculator() {
               event.target.value = "";
             }}
           />
+          <input
+            ref={rateLibraryInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importRateLibrary(file);
+              event.target.value = "";
+            }}
+          />
+          <input
+            ref={classificationMappingInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importClassificationMappings(file);
+              event.target.value = "";
+            }}
+          />
         </div>
       </section>
 
-      {mode === "estimate" ? renderEstimate() : renderCompare()}
+      {mode === "estimate"
+        ? renderEstimate()
+        : mode === "rates"
+          ? renderRateLibrary()
+          : mode === "mappings"
+            ? renderClassificationMappings()
+            : renderCompare()}
     </main>
   );
 
@@ -510,7 +806,7 @@ function CostCalculator() {
               value={filters.readiness}
               onChange={(event) => updateFilter("readiness", event.target.value)}
             >
-              <option value="">All rows</option>
+              <option value="">All work items</option>
               <option value="ready">Ready</option>
               <option value="review">Review</option>
               <option value="incomplete">Incomplete</option>
@@ -520,25 +816,50 @@ function CostCalculator() {
           <div className="cost-kpi-grid">
             <span>
               <strong>{analysis.summary.elements}</strong>
-              elements
+              model elements
             </span>
             <span>
-              <strong>{analysis.summary.quantityElements}</strong>
-              with QTO
+              <strong>{pricedRows.length}</strong>
+              priced work items
             </span>
             <span>
-              <strong>{analysis.summary.readyRows}</strong>
-              ready rows
+              <strong>{fullSummary.excludedQuantities}</strong>
+              quantities excluded
             </span>
             <span>
-              <strong>{analysis.summary.classifiedElements}</strong>
-              classified
+              <strong>{fullSummary.unpriced}</strong>
+              need a rate
+            </span>
+            <span>
+              <strong>{analysis.summary.costGroupElements}</strong>
+              DIN-mapped elements
+            </span>
+            <span>
+              <strong>{analysis.summary.unmappedClassificationElements}</strong>
+              classifications to map
             </span>
           </div>
 
+          <button
+            type="button"
+            className="manage-rate-library-button"
+            onClick={() => setMode("rates")}
+          >
+            <BookOpen size={16} />
+            Manage {activeRateCount} active rate rules
+          </button>
+          <button
+            type="button"
+            className="manage-rate-library-button"
+            onClick={() => setMode("mappings")}
+          >
+            <Layers size={16} />
+            Manage {completedMappingCount} DIN 276 mappings
+          </button>
+
           <div className="bulk-rate-panel">
             <label>
-              Unit rate for filtered rows
+              Unit rate for filtered work items
               <input
                 value={bulkRate}
                 onChange={(event) => setBulkRate(event.target.value)}
@@ -569,7 +890,7 @@ function CostCalculator() {
               </span>
               <span>
                 <strong>{visibleSummary.items}</strong>
-                rows
+                work items
               </span>
               <span>
                 <strong>{visibleSummary.elements.size}</strong>
@@ -580,16 +901,85 @@ function CostCalculator() {
 
           {message && <p className="cost-status-message">{message}</p>}
 
-          {(analysis.summary.fallbackRows > 0 ||
+          <div className="cost-rule-notice">
+            <BarChart3 size={18} />
+            <span>
+              <strong>One pricing basis per element.</strong>
+              {` ${pricedRows.length} work items selected; ${fullSummary.excludedQuantities} alternative IFC quantity rows excluded from totals.`}
+            </span>
+          </div>
+
+          {(fullSummary.unpriced > 0 ||
+            analysis.summary.fallbackRows > 0 ||
             analysis.summary.classifiedElements < analysis.summary.elements) && (
             <div className="cost-warning">
               <AlertTriangle size={18} />
               <span>
-                Some rows need review because explicit IFC quantities or cost
-                classifications are missing.
+                {fullSummary.unpriced > 0
+                  ? `${fullSummary.unpriced} work item${fullSummary.unpriced === 1 ? " needs" : "s need"} a matching rate rule or manual rate.`
+                  : "Some elements still need quantity or classification review."}
               </span>
             </div>
           )}
+
+          <section className="cost-dashboard" aria-label="Grouped cost dashboard">
+            <div className="cost-dashboard-heading">
+              <div>
+                <BarChart3 size={18} />
+                <div>
+                  <strong>Filtered cost breakdown</strong>
+                  <small>Click a group to apply it as a filter.</small>
+                </div>
+              </div>
+              <div className="cost-dashboard-tabs" aria-label="Group costs by">
+                <button
+                  type="button"
+                  className={groupBy === "level" ? "active" : ""}
+                  onClick={() => setGroupBy("level")}
+                >
+                  Level
+                </button>
+                <button
+                  type="button"
+                  className={groupBy === "costGroup" ? "active" : ""}
+                  onClick={() => setGroupBy("costGroup")}
+                >
+                  Cost group
+                </button>
+                <button
+                  type="button"
+                  className={groupBy === "elementType" ? "active" : ""}
+                  onClick={() => setGroupBy("elementType")}
+                >
+                  IFC class
+                </button>
+              </div>
+            </div>
+            <div className="cost-breakdown-list">
+              {costBreakdown.slice(0, 8).map((group) => (
+                <button
+                  type="button"
+                  className="cost-breakdown-row"
+                  key={`${groupBy}-${group.value || "unclassified"}`}
+                  onClick={() => applyBreakdownFilter(group)}
+                  disabled={groupBy === "costGroup" && !group.value}
+                >
+                  <span className="cost-breakdown-label">
+                    <strong>{group.label}</strong>
+                    <small>{group.elementCount} element{group.elementCount === 1 ? "" : "s"}</small>
+                  </span>
+                  <span className="cost-breakdown-track">
+                    <span style={{ width: `${Math.max(2, group.share * 100)}%` }} />
+                  </span>
+                  <span className="cost-breakdown-value">
+                    <strong>{formatCurrency(group.total)}</strong>
+                    <small>{formatPercent(group.share)}</small>
+                  </span>
+                </button>
+              ))}
+              {!costBreakdown.length && <p>No priced work items match the filters.</p>}
+            </div>
+          </section>
 
           <section className="cost-model-panel" aria-label="Filtered IFC model">
             <div className="cost-model-heading">
@@ -598,7 +988,7 @@ function CostCalculator() {
                 <div>
                   <strong>IFC model + cost view</strong>
                   <small>
-                    Filters control both the model visibility and the cost rows.
+                    Filters control both the model visibility and the cost work items.
                     Click a model element or table row to connect them.
                   </small>
                 </div>
@@ -683,7 +1073,7 @@ function CostCalculator() {
                   <th>Element</th>
                   <th>Level</th>
                   <th>Classification</th>
-                  <th>Quantity</th>
+                  <th>Pricing basis</th>
                   <th>Rate</th>
                   <th>Total</th>
                   <th>Status</th>
@@ -692,11 +1082,13 @@ function CostCalculator() {
               <tbody>
                 {filteredRows.slice(0, 800).map((row) => {
                   const rate = getRowRate(row, rowRates);
+                  const rateSource = getRowRateSource(row, rowRates);
                   const rowTotal = row.quantityValue * rate;
+                  const isPriced = rateSource !== "No matching rate";
 
                   return (
                     <tr
-                      key={row.rowId}
+                      key={row.elementId}
                       className={selectedElementId === row.elementId ? "is-selected" : ""}
                       onClick={() => setSelectedElementId(row.elementId)}
                       tabIndex={0}
@@ -720,38 +1112,52 @@ function CostCalculator() {
                             : `${formatQuantity(row.levelElevation)} m`}
                         </small>
                       </td>
-                      <td>
-                        <span>{row.costGroup || row.classification || "-"}</span>
-                        <small>{row.fgk ? `FGK ${row.fgk}` : "FGK not set"}</small>
-                      </td>
-                      <td>
-                        <span>
-                          {formatQuantity(row.quantityValue)} {row.unit}
-                        </span>
+                      <td className="classification-cell">
+                        <span>{row.costGroup ? `KG ${row.costGroup}` : "DIN not mapped"}</span>
+                        <small>{row.classification || "No IFC classification"}</small>
                         <small>
-                          {row.quantitySetName} / {row.quantityName}
-                          {row.quantityId ? ` (#${row.quantityId})` : ""}
+                          {row.costGroupSource || "No mapping"} &middot; {row.fgk ? `FGK ${row.fgk}` : "FGK not set"}
+                        </small>
+                      </td>
+                      <td className="pricing-basis-cell">
+                        <select
+                          value={row.rowId}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) =>
+                            updateBasisOverride(row.elementId, event.target.value)
+                          }
+                          aria-label={`Pricing basis for element ${row.elementId}`}
+                        >
+                          {row.pricingCandidates.map((candidate) => (
+                            <option key={candidate.rowId} value={candidate.rowId}>
+                              {candidate.quantityName} - {formatQuantity(candidate.quantityValue)} {candidate.unit}
+                            </option>
+                          ))}
+                        </select>
+                        <small>
+                          {row.rateRuleLabel} &middot; {row.excludedQuantityCount} alternative{row.excludedQuantityCount === 1 ? "" : "s"} excluded
                         </small>
                       </td>
                       <td>
                         <input
                           value={rowRates[row.rowId] ?? rate}
+                          onClick={(event) => event.stopPropagation()}
                           onChange={(event) =>
                             updateRowRate(row.rowId, event.target.value)
                           }
                           inputMode="decimal"
                           aria-label={`Unit rate for row ${row.rowId}`}
                         />
-                        <small>EUR/{row.unit}</small>
+                        <small>{rateSource} &middot; EUR/{row.unit}</small>
                       </td>
                       <td>
                         <strong>{formatCurrency(rowTotal)}</strong>
                       </td>
                       <td>
-                        <span className={`readiness-pill ${row.readiness.level}`}>
-                          {row.readiness.label}
+                        <span className={`pricing-pill ${isPriced ? "priced" : "unpriced"}`}>
+                          {isPriced ? "Priced" : "Needs rate"}
                         </span>
-                        {row.fallback && <small>count fallback</small>}
+                        <small>{row.readiness.label}</small>
                       </td>
                     </tr>
                   );
@@ -763,10 +1169,299 @@ function CostCalculator() {
           {!filteredRows.length && (
             <div className="cost-empty-state">
               <Calculator size={36} />
-              <p>No cost rows match the current filters.</p>
+              <p>No cost work items match the current filters.</p>
             </div>
           )}
         </section>
+      </section>
+    );
+  }
+
+  function renderClassificationMappings() {
+    const unmappedCount = classificationMappings.filter(
+      (entry) => !entry.dinGroup
+    ).length;
+
+    return (
+      <section className="rate-library-workspace classification-mapping-workspace">
+        <div className="rate-library-intro">
+          <div>
+            <p className="cost-eyebrow">Saved automatically in this browser</p>
+            <h2>Original IFC classification to DIN 276</h2>
+            <p>
+              The IFC classification remains unchanged. These explicit rules derive
+              a DIN 276 cost group for filtering and rate matching; numeric codes from
+              other systems are never treated as DIN automatically.
+            </p>
+          </div>
+          <div className="rate-library-summary classification-mapping-summary">
+            <span><strong>{discoveredClassificationCount}</strong> discovered codes</span>
+            <span><strong>{completedMappingCount}</strong> completed maps</span>
+            <span><strong>{analysis.summary.mappedCostGroupElements}</strong> mapped elements</span>
+            <span><strong>{unmappedCount}</strong> need review</span>
+          </div>
+        </div>
+
+        {message && <p className="cost-status-message">{message}</p>}
+
+        {rawText && (
+          <div className="classification-coverage-notice">
+            <strong>{analysis.summary.classifiedElements}</strong> classified elements
+            <span>&middot;</span>
+            <strong>{analysis.summary.costGroupElements}</strong> with DIN 276 group
+            <span>&middot;</span>
+            <strong>{analysis.summary.unmappedClassificationElements}</strong> classified but unmapped
+            <span>&middot;</span>
+            <span>{analysis.summary.classificationSystems.join(", ") || "No classification system found"}</span>
+          </div>
+        )}
+
+        <div className="rate-library-table-wrap">
+          <table className="rate-library-table classification-mapping-table">
+            <thead>
+              <tr>
+                <th>Active</th>
+                <th>Source system</th>
+                <th>Source code</th>
+                <th>IFC description</th>
+                <th>DIN 276 group</th>
+                <th>Elements</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {classificationMappings.map((entry) => {
+                const observed = findObservedClassification(
+                  analysis.classificationCatalog,
+                  entry
+                );
+                const isMapped = Boolean(entry.active && entry.dinGroup);
+
+                return (
+                  <tr key={entry.id} className={entry.active ? "" : "is-inactive"}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={entry.active}
+                        onChange={(event) =>
+                          updateClassificationMapping(entry.id, "active", event.target.checked)
+                        }
+                        aria-label={`Enable mapping ${entry.sourceSystem} ${entry.sourceCode}`}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={entry.sourceSystem}
+                        onChange={(event) =>
+                          updateClassificationMapping(entry.id, "sourceSystem", event.target.value)
+                        }
+                        placeholder="Uniformat"
+                        aria-label={`Source system for ${entry.id}`}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={entry.sourceCode}
+                        onChange={(event) =>
+                          updateClassificationMapping(entry.id, "sourceCode", event.target.value)
+                        }
+                        placeholder="342"
+                        aria-label={`Source code for ${entry.id}`}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={entry.label}
+                        onChange={(event) =>
+                          updateClassificationMapping(entry.id, "label", event.target.value)
+                        }
+                        placeholder={observed?.name || "Classification description"}
+                        aria-label={`Description for ${entry.sourceSystem} ${entry.sourceCode}`}
+                      />
+                      {observed?.name && observed.name !== entry.label && (
+                        <small>IFC: {observed.name}</small>
+                      )}
+                    </td>
+                    <td>
+                      <input
+                        value={entry.dinGroup}
+                        onChange={(event) =>
+                          updateClassificationMapping(entry.id, "dinGroup", event.target.value)
+                        }
+                        placeholder="e.g. 342"
+                        aria-label={`DIN 276 group for ${entry.sourceSystem} ${entry.sourceCode}`}
+                      />
+                    </td>
+                    <td>
+                      <strong>{observed?.elementCount || 0}</strong>
+                    </td>
+                    <td>
+                      <span className={`mapping-status ${isMapped ? "mapped" : "unmapped"}`}>
+                        {isMapped ? `KG ${entry.dinGroup}` : "Needs DIN group"}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="delete-rate-button"
+                        onClick={() => removeClassificationMapping(entry.id)}
+                        aria-label={`Delete mapping ${entry.sourceSystem} ${entry.sourceCode}`}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {!classificationMappings.length && (
+          <div className="cost-compare-empty">
+            <Layers size={42} />
+            <h2>No classification mappings</h2>
+            <p>Add a mapping or restore the built-in defaults.</p>
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  function renderRateLibrary() {
+    return (
+      <section className="rate-library-workspace">
+        <div className="rate-library-intro">
+          <div>
+            <p className="cost-eyebrow">Saved automatically in this browser</p>
+            <h2>Unit-safe pricing rules</h2>
+            <p>
+              Each rule matches an IFC class to one quantity unit and preferred
+              pricing basis. The first active matching rule prices the element;
+              all alternative quantities are excluded from totals.
+            </p>
+          </div>
+          <div className="rate-library-summary">
+            <span><strong>{rateLibrary.length}</strong> rules</span>
+            <span><strong>{activeRateCount}</strong> active</span>
+            <span><strong>{new Set(rateLibrary.map((entry) => entry.elementType)).size}</strong> IFC classes</span>
+          </div>
+        </div>
+
+        {message && <p className="cost-status-message">{message}</p>}
+
+        <div className="rate-library-table-wrap">
+          <table className="rate-library-table">
+            <thead>
+              <tr>
+                <th>Active</th>
+                <th>Rule name</th>
+                <th>IFC class</th>
+                <th>Cost group</th>
+                <th>Preferred basis</th>
+                <th>Unit</th>
+                <th>Rate (EUR)</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {rateLibrary.map((entry) => (
+                <tr key={entry.id} className={entry.active ? "" : "is-inactive"}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={entry.active}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "active", event.target.checked)
+                      }
+                      aria-label={`Enable ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.label}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "label", event.target.value)
+                      }
+                      aria-label={`Rule name for ${entry.id}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.elementType}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "elementType", event.target.value.toUpperCase())
+                      }
+                      placeholder="IFCWALL"
+                      aria-label={`IFC class for ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.costGroup}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "costGroup", event.target.value)
+                      }
+                      placeholder="Optional"
+                      aria-label={`Cost group for ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.quantityName}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "quantityName", event.target.value)
+                      }
+                      placeholder="NetSideArea"
+                      aria-label={`Preferred quantity for ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.unit}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "unit", event.target.value)
+                      }
+                      placeholder="m2"
+                      aria-label={`Unit for ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={entry.rate}
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "rate", event.target.value)
+                      }
+                      aria-label={`Rate for ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="delete-rate-button"
+                      onClick={() => removeRateRule(entry.id)}
+                      aria-label={`Delete ${entry.label}`}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {!rateLibrary.length && (
+          <div className="cost-compare-empty">
+            <BookOpen size={42} />
+            <h2>No rate rules</h2>
+            <p>Add a rule or restore the built-in defaults.</p>
+          </div>
+        )}
       </section>
     );
   }
@@ -1012,6 +1707,68 @@ function buildFilterOptions(rows) {
   };
 }
 
+function findObservedClassification(catalog, mapping) {
+  const system = String(mapping.sourceSystem || "").trim().toLowerCase();
+  const code = String(mapping.sourceCode || "").trim().toLowerCase();
+  return catalog.find(
+    (entry) =>
+      String(entry.system || "").trim().toLowerCase() === system &&
+      String(entry.code || "").trim().toLowerCase() === code
+  );
+}
+
+function readClassificationMappings() {
+  if (typeof localStorage === "undefined") {
+    return createDefaultClassificationMappings();
+  }
+
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(CLASSIFICATION_MAPPING_STORAGE_KEY)
+    );
+    const normalized = normalizeClassificationMappings(saved);
+    return normalized.length
+      ? normalized
+      : createDefaultClassificationMappings();
+  } catch {
+    return createDefaultClassificationMappings();
+  }
+}
+
+function readRateLibrary() {
+  if (typeof localStorage === "undefined") return createDefaultRateLibrary();
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(RATE_LIBRARY_STORAGE_KEY));
+    const normalized = normalizeRateLibrary(saved);
+    return normalized.length ? normalized : createDefaultRateLibrary();
+  } catch {
+    return createDefaultRateLibrary();
+  }
+}
+
+function createClassificationMappingId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `classification-map-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createRateRuleId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `rate-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function downloadJson(value, fileName) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function downloadCsv(csv, fileName) {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -1030,6 +1787,13 @@ function formatCurrency(value) {
   return new Intl.NumberFormat("de-DE", {
     style: "currency",
     currency: "EUR",
+    maximumFractionDigits: 0,
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
+function formatPercent(value) {
+  return new Intl.NumberFormat("de-DE", {
+    style: "percent",
     maximumFractionDigits: 0,
   }).format(Number.isFinite(value) ? value : 0);
 }

@@ -33,66 +33,200 @@ const QUANTITY_META = {
   IFCQUANTITYWEIGHT: { valueIndex: 3, unit: "kg" },
 };
 
-const DEFAULT_RATES = [
-  { type: "IFCWALL", unit: "m2", rate: 185 },
-  { type: "IFCWALLSTANDARDCASE", unit: "m2", rate: 185 },
-  { type: "IFCWALL", unit: "m3", rate: 420 },
-  { type: "IFCWALLSTANDARDCASE", unit: "m3", rate: 420 },
-  { type: "IFCSLAB", unit: "m2", rate: 120 },
-  { type: "IFCSLAB", unit: "m3", rate: 380 },
-  { type: "IFCROOF", unit: "m2", rate: 160 },
-  { type: "IFCDOOR", unit: "St", rate: 650 },
-  { type: "IFCWINDOW", unit: "m2", rate: 480 },
-  { type: "IFCWINDOW", unit: "St", rate: 520 },
-  { type: "IFCCOLUMN", unit: "m3", rate: 520 },
-  { type: "IFCBEAM", unit: "m3", rate: 500 },
-  { type: "IFCFOOTING", unit: "m3", rate: 390 },
-  { type: "IFCSTAIR", unit: "m2", rate: 350 },
-  { type: "IFCCOVERING", unit: "m2", rate: 55 },
-  { type: "IFCSPACE", unit: "m2", rate: 0 },
+const QUANTITY_PRIORITY = [
+  "NetSideArea",
+  "NetArea",
+  "NetFloorArea",
+  "NetVolume",
+  "GrossSideArea",
+  "GrossArea",
+  "GrossFloorArea",
+  "GrossVolume",
+  "ProjectedArea",
+  "Length",
+  "Height",
+  "Width",
+  "ElementCount",
 ];
 
-export function buildCostAnalysis(text, targetFgk = "300") {
+const DEFAULT_RATE_LIBRARY = [
+  {
+    id: "wall-area",
+    label: "Wall construction",
+    elementType: "IFCWALL",
+    costGroup: "",
+    unit: "m2",
+    quantityName: "NetSideArea",
+    rate: 185,
+    active: true,
+  },
+  {
+    id: "wall-standard-area",
+    label: "Standard wall construction",
+    elementType: "IFCWALLSTANDARDCASE",
+    costGroup: "",
+    unit: "m2",
+    quantityName: "NetSideArea",
+    rate: 185,
+    active: true,
+  },
+  {
+    id: "slab-volume",
+    label: "Slab construction",
+    elementType: "IFCSLAB",
+    costGroup: "",
+    unit: "m3",
+    quantityName: "NetVolume",
+    rate: 380,
+    active: true,
+  },
+  {
+    id: "roof-area",
+    label: "Roof construction",
+    elementType: "IFCROOF",
+    costGroup: "",
+    unit: "m2",
+    quantityName: "NetArea",
+    rate: 160,
+    active: true,
+  },
+  {
+    id: "covering-area",
+    label: "Covering / finish",
+    elementType: "IFCCOVERING",
+    costGroup: "",
+    unit: "m2",
+    quantityName: "NetArea",
+    rate: 55,
+    active: true,
+  },
+  ...[
+    ["door-count", "Door", "IFCDOOR", "St", "ElementCount", 650],
+    ["window-count", "Window", "IFCWINDOW", "St", "ElementCount", 520],
+    ["column-volume", "Column", "IFCCOLUMN", "m3", "NetVolume", 520],
+    ["beam-volume", "Beam", "IFCBEAM", "m3", "NetVolume", 500],
+    ["footing-volume", "Footing", "IFCFOOTING", "m3", "NetVolume", 390],
+    ["pile-volume", "Pile", "IFCPILE", "m3", "NetVolume", 430],
+    ["stair-area", "Stair", "IFCSTAIR", "m2", "NetArea", 350],
+    ["curtain-wall-area", "Curtain wall", "IFCCURTAINWALL", "m2", "NetSideArea", 480],
+    ["railing-length", "Railing", "IFCRAILING", "m", "Length", 320],
+    ["space-area", "Space", "IFCSPACE", "m2", "NetFloorArea", 0],
+  ].map(([id, label, elementType, unit, quantityName, rate]) => ({
+    id,
+    label,
+    elementType,
+    costGroup: "",
+    unit,
+    quantityName,
+    rate,
+    active: true,
+  })),
+];
+
+const DEFAULT_CLASSIFICATION_MAPPINGS = [
+  ["332", "Nichttragende Aussenwaende", "332"],
+  ["335", "Aussenwandbekleidungen, aussen", "335"],
+  ["336", "Aussenwandbekleidungen, innen", "336"],
+  ["342", "Nichttragende Innenwaende", "342"],
+  ["344", "Innenwandoeffnungen", "344"],
+  ["345", "Innenwandbekleidungen", "345"],
+  ["346", "Elementierte Innenwandkonstruktionen", "346"],
+  ["351", "Deckenkonstruktionen", "351"],
+  ["353", "Deckenbelaege", "353"],
+  ["364", "Dachbekleidungen", "364"],
+  ["B10", "Uniformat B10 - review required", ""],
+].map(([sourceCode, label, dinGroup]) => ({
+  id: `uniformat-${sourceCode.toLowerCase()}-din`,
+  sourceSystem: "Uniformat",
+  sourceCode,
+  label,
+  dinGroup,
+  active: true,
+}));
+
+export function createDefaultClassificationMappings() {
+  return DEFAULT_CLASSIFICATION_MAPPINGS.map((entry) => ({ ...entry }));
+}
+
+export function normalizeClassificationMappings(entries) {
+  if (!Array.isArray(entries)) return createDefaultClassificationMappings();
+
+  return entries
+    .map((entry, index) => ({
+      id: String(entry.id || `classification-map-${index + 1}`),
+      sourceSystem: String(entry.sourceSystem || "").trim(),
+      sourceCode: String(entry.sourceCode || "").trim(),
+      label: String(entry.label || "").trim(),
+      dinGroup: String(entry.dinGroup || "").trim(),
+      active: entry.active !== false,
+    }))
+    .filter((entry) => entry.sourceSystem && entry.sourceCode);
+}
+
+export function mergeClassificationMappings(entries, catalog = []) {
+  const normalized = normalizeClassificationMappings(entries);
+  const known = new Set(
+    normalized.map((entry) =>
+      classificationMappingKey(entry.sourceSystem, entry.sourceCode)
+    )
+  );
+  const additions = [];
+
+  catalog.forEach((classification) => {
+    const key = classificationMappingKey(
+      classification.system,
+      classification.code
+    );
+    if (!classification.system || !classification.code || known.has(key)) return;
+
+    known.add(key);
+    additions.push({
+      id: `classification-map-${slugify(classification.system)}-${slugify(classification.code)}`,
+      sourceSystem: classification.system,
+      sourceCode: classification.code,
+      label: classification.name || classification.display || "Discovered in IFC",
+      dinGroup: "",
+      active: true,
+    });
+  });
+
+  return additions.length ? normalized.concat(additions) : entries;
+}
+
+export function createDefaultRateLibrary() {
+  return DEFAULT_RATE_LIBRARY.map((entry) => ({ ...entry }));
+}
+
+export function buildCostAnalysis(
+  text,
+  targetFgk = "300",
+  classificationMappings = createDefaultClassificationMappings()
+) {
   const { records } = parseIfcLines(text);
   const levelsByElement = buildElementLevels(records);
   const propertySets = buildPropertySets(records);
   const quantitySets = buildQuantitySets(records);
+  const normalizedMappings = normalizeClassificationMappings(classificationMappings);
   const propertiesByElement = new Map();
   const classificationsByElement = new Map();
   const elementsWithQuantities = new Set();
   const quantityRows = [];
 
+  // Pass 1: collect every property and classification relationship first.
+  // Large IFC exports commonly place classification associations after QTO rows.
   for (const record of records.values()) {
     if (record.type === "IFCRELDEFINESBYPROPERTIES") {
       const relatedElementIds = parseRefList(record.args[4]);
       const definitionId = parseRef(record.args[5]);
       const propertySet = propertySets.get(definitionId);
-      const quantitySet = quantitySets.get(definitionId);
 
       if (propertySet) {
         relatedElementIds.forEach((elementId) => {
-          const next = propertiesByElement.get(elementId) || [];
-          propertiesByElement.set(elementId, next.concat(propertySet.properties));
-        });
-      }
-
-      if (quantitySet) {
-        relatedElementIds.forEach((elementId) => {
-          const element = records.get(elementId);
-          if (!isCostElement(element)) return;
-
-          elementsWithQuantities.add(elementId);
-          quantitySet.quantities.forEach((quantity) => {
-            quantityRows.push(
-              makeQuantityRow({
-                element,
-                quantitySet,
-                quantity,
-                properties: propertiesByElement.get(elementId) || [],
-                classification: classificationsByElement.get(elementId) || "",
-              })
-            );
-          });
+          const nextProperties = propertiesByElement.get(elementId) || [];
+          propertiesByElement.set(
+            elementId,
+            nextProperties.concat(propertySet.properties)
+          );
         });
       }
     }
@@ -100,11 +234,60 @@ export function buildCostAnalysis(text, targetFgk = "300") {
     if (record.type === "IFCRELASSOCIATESCLASSIFICATION") {
       const relatedElementIds = parseRefList(record.args[4]);
       const classificationId = parseRef(record.args[5]);
-      const classification = parseClassification(records.get(classificationId));
+      const classification = parseClassification(
+        records.get(classificationId),
+        records
+      );
+
       relatedElementIds.forEach((elementId) => {
-        if (classification) classificationsByElement.set(elementId, classification);
+        if (!classification) return;
+        const nextClassifications = classificationsByElement.get(elementId) || [];
+        const key = classificationMappingKey(
+          classification.system,
+          classification.code
+        );
+        if (
+          !nextClassifications.some(
+            (entry) =>
+              classificationMappingKey(entry.system, entry.code) === key
+          )
+        ) {
+          classificationsByElement.set(
+            elementId,
+            nextClassifications.concat(classification)
+          );
+        }
       });
     }
+  }
+
+  // Pass 2: create quantity rows only after metadata is complete.
+  for (const record of records.values()) {
+    if (record.type !== "IFCRELDEFINESBYPROPERTIES") continue;
+
+    const relatedElementIds = parseRefList(record.args[4]);
+    const definitionId = parseRef(record.args[5]);
+    const quantitySet = quantitySets.get(definitionId);
+    if (!quantitySet) continue;
+
+    relatedElementIds.forEach((elementId) => {
+      const element = records.get(elementId);
+      if (!isCostElement(element)) return;
+
+      elementsWithQuantities.add(elementId);
+      quantitySet.quantities.forEach((quantity) => {
+        quantityRows.push(
+          makeQuantityRow({
+            element,
+            quantitySet,
+            quantity,
+            properties: propertiesByElement.get(elementId) || [],
+            classifications: classificationsByElement.get(elementId) || [],
+            classificationMappings: normalizedMappings,
+          })
+        );
+      });
+    });
   }
 
   const fallbackRows = [];
@@ -124,7 +307,8 @@ export function buildCostAnalysis(text, targetFgk = "300") {
           fallback: true,
         },
         properties: propertiesByElement.get(element.id) || [],
-        classification: classificationsByElement.get(element.id) || "",
+        classifications: classificationsByElement.get(element.id) || [],
+        classificationMappings: normalizedMappings,
       })
     );
   }
@@ -138,13 +322,9 @@ export function buildCostAnalysis(text, targetFgk = "300") {
         level: "Unassigned",
         levelElevation: null,
       }),
-      costGroup: row.costGroup || extractCostGroup(row.properties, row.classification),
-      fgk: row.fgk || extractFgk(row.properties),
-      modelRate: row.modelRate ?? extractModelRate(row.properties),
     }))
     .map((row) => ({
       ...row,
-      defaultRate: findDefaultRate(row),
       readiness: getReadiness(row, targetFgk),
     }))
     .sort((a, b) => {
@@ -158,6 +338,48 @@ export function buildCostAnalysis(text, targetFgk = "300") {
     });
 
   return {
+    rows,
+    classificationCatalog: buildClassificationCatalog(rows),
+    summary: summarizeCostRows(rows, targetFgk),
+  };
+}
+
+export function applyClassificationMappings(
+  analysis,
+  classificationMappings,
+  targetFgk = "300"
+) {
+  const mappings = normalizeClassificationMappings(classificationMappings);
+  const rows = (analysis?.rows || [])
+    .map((row) => {
+      const resolution = resolveCostGroup(
+        row.properties || [],
+        row.classifications || [],
+        mappings
+      );
+      const mappedRow = {
+        ...row,
+        costGroup: resolution.costGroup,
+        costGroupSource: resolution.source,
+        costGroupMappingId: resolution.mappingId,
+      };
+      return {
+        ...mappedRow,
+        readiness: getReadiness(mappedRow, targetFgk),
+      };
+    })
+    .sort((a, b) => {
+      return (
+        String(a.level).localeCompare(String(b.level), undefined, { numeric: true }) ||
+        a.elementType.localeCompare(b.elementType) ||
+        String(a.costGroup).localeCompare(String(b.costGroup)) ||
+        a.elementId - b.elementId ||
+        a.quantityName.localeCompare(b.quantityName)
+      );
+    });
+
+  return {
+    ...analysis,
     rows,
     summary: summarizeCostRows(rows, targetFgk),
   };
@@ -185,6 +407,10 @@ export function filterCostRows(rows, filters) {
         row.quantityName,
         row.costGroup,
         row.classification,
+        row.classificationSystem,
+        row.classificationCode,
+        row.classificationName,
+        row.costGroupSource,
         row.fgk,
       ].join(" ")
     );
@@ -204,14 +430,154 @@ export function filterCostRows(rows, filters) {
   });
 }
 
-export function getRowRate(row, overrides) {
-  const override = overrides[row.rowId];
-  if (override !== undefined && override !== "") return Number(override) || 0;
-  if (row.modelRate !== null && row.modelRate !== undefined) return row.modelRate;
-  return row.defaultRate;
+export function normalizeRateLibrary(entries) {
+  if (!Array.isArray(entries)) return createDefaultRateLibrary();
+
+  return entries
+    .map((entry, index) => {
+      const rate = Number(entry.rate);
+      return {
+        id: String(entry.id || `rate-${index + 1}`),
+        label: String(entry.label || "Unnamed rate").trim(),
+        elementType: String(entry.elementType || "").trim().toUpperCase(),
+        costGroup: String(entry.costGroup || "").trim(),
+        unit: String(entry.unit || "").trim(),
+        quantityName: String(entry.quantityName || "").trim(),
+        rate: Number.isFinite(rate) ? Math.max(0, rate) : 0,
+        active: entry.active !== false,
+      };
+    })
+    .filter((entry) => entry.elementType && entry.unit);
 }
 
-export function summarizeCosts(rows, overrides) {
+export function applyCostRules(
+  rows,
+  rateLibrary = createDefaultRateLibrary(),
+  basisOverrides = {}
+) {
+  const rules = normalizeRateLibrary(rateLibrary).filter((entry) => entry.active);
+  const rowsByElement = new Map();
+
+  rows.forEach((row) => {
+    const group = rowsByElement.get(row.elementId) || [];
+    group.push(row);
+    rowsByElement.set(row.elementId, group);
+  });
+
+  return Array.from(rowsByElement.values())
+    .map((elementRows) => {
+      const baseRow = elementRows[0];
+      const elementRules = rules
+        .filter((rule) => ruleMatchesElement(rule, baseRow))
+        .sort(
+          (a, b) =>
+            costGroupRuleSpecificity(b.costGroup) - costGroupRuleSpecificity(a.costGroup)
+        );
+      const candidates = elementRows.slice();
+
+      if (
+        elementRules.some((rule) => rule.unit === "St") &&
+        !candidates.some((row) => row.unit === "St")
+      ) {
+        candidates.push(makeCountCandidate(baseRow));
+      }
+
+      const overrideRowId = basisOverrides[baseRow.elementId];
+      let selected = candidates.find((row) => row.rowId === overrideRowId) || null;
+      let rateRule = selected ? findRateRule(selected, elementRules) : null;
+      let selectionReason = selected ? "Manual pricing basis" : "";
+
+      if (!selected) {
+        for (const rule of elementRules) {
+          const unitCandidates = candidates.filter((row) => row.unit === rule.unit);
+          if (!unitCandidates.length) continue;
+
+          selected = selectPreferredQuantity(unitCandidates, rule.quantityName);
+          rateRule = rule;
+          selectionReason = rule.quantityName
+            ? `Rule preference: ${rule.quantityName}`
+            : `Rule unit: ${rule.unit}`;
+          break;
+        }
+      }
+
+      if (!selected) {
+        selected = selectPreferredQuantity(candidates, "");
+        selectionReason = "No matching rate rule";
+      }
+
+      if (!rateRule) rateRule = findRateRule(selected, elementRules);
+      const hasModelRate =
+        selected.modelRate !== null &&
+        selected.modelRate !== undefined &&
+        Number.isFinite(Number(selected.modelRate));
+
+      const selectedIsRawQuantity = !selected.ruleGenerated;
+      const excludedQuantityCount = Math.max(
+        0,
+        elementRows.length - (selectedIsRawQuantity ? 1 : 0)
+      );
+      const pricingCandidates = candidates.map((candidate) => ({
+        rowId: candidate.rowId,
+        quantityName: candidate.quantityName,
+        quantityValue: candidate.quantityValue,
+        quantitySetName: candidate.quantitySetName,
+        unit: candidate.unit,
+        ruleGenerated: Boolean(candidate.ruleGenerated),
+      }));
+
+      return {
+        ...selected,
+        rateRuleId: rateRule?.id || "",
+        rateRuleLabel:
+          rateRule?.label || (hasModelRate ? "IFC model rate" : "No matching rate"),
+        ruleRate: rateRule ? rateRule.rate : null,
+        pricingStatus: rateRule || hasModelRate ? "priced" : "unpriced",
+        selectionReason,
+        pricingCandidates,
+        excludedQuantityCount,
+      };
+    })
+    .sort((a, b) => {
+      return (
+        String(a.level).localeCompare(String(b.level), undefined, { numeric: true }) ||
+        a.elementType.localeCompare(b.elementType) ||
+        a.elementId - b.elementId
+      );
+    });
+}
+
+export function getRowRate(row, overrides = {}) {
+  const override = overrides[row.rowId];
+  if (override !== undefined && override !== "") return Number(override) || 0;
+  if (
+    row.modelRate !== null &&
+    row.modelRate !== undefined &&
+    Number.isFinite(Number(row.modelRate))
+  ) {
+    return Number(row.modelRate) || 0;
+  }
+  if (row.ruleRate !== null && row.ruleRate !== undefined) {
+    return Number(row.ruleRate) || 0;
+  }
+  return 0;
+}
+
+export function getRowRateSource(row, overrides = {}) {
+  const override = overrides[row.rowId];
+  if (override !== undefined && override !== "") return "Manual override";
+  if (
+    row.modelRate !== null &&
+    row.modelRate !== undefined &&
+    Number.isFinite(Number(row.modelRate))
+  ) {
+    return "IFC model rate";
+  }
+  if (row.rateRuleId) return "Rate library";
+  return "No matching rate";
+}
+
+export function summarizeCosts(rows, overrides = {}) {
   return rows.reduce(
     (summary, row) => {
       const rate = getRowRate(row, overrides);
@@ -221,6 +587,8 @@ export function summarizeCosts(rows, overrides) {
       summary.quantity += row.quantityValue;
       summary.items += 1;
       summary.elements.add(row.elementId);
+      summary.excludedQuantities += row.excludedQuantityCount || 0;
+      if (getRowRateSource(row, overrides) === "No matching rate") summary.unpriced += 1;
       if (row.fallback) summary.fallbacks += 1;
       if (!row.costGroup) summary.missingCostGroups += 1;
       return summary;
@@ -230,13 +598,138 @@ export function summarizeCosts(rows, overrides) {
       quantity: 0,
       items: 0,
       elements: new Set(),
+      unpriced: 0,
+      excludedQuantities: 0,
       fallbacks: 0,
       missingCostGroups: 0,
     }
   );
 }
 
-export function exportCostRowsCsv(rows, overrides) {
+export function buildCostBreakdown(rows, overrides = {}, groupBy = "level") {
+  const groups = new Map();
+
+  rows.forEach((row) => {
+    const group = getBreakdownGroup(row, groupBy);
+    const current = groups.get(group.value) || {
+      value: group.value,
+      label: group.label,
+      total: 0,
+      items: 0,
+      elements: new Set(),
+      unpriced: 0,
+    };
+    const rowTotal = row.quantityValue * getRowRate(row, overrides);
+
+    current.total += Number.isFinite(rowTotal) ? rowTotal : 0;
+    current.items += 1;
+    current.elements.add(row.elementId);
+    if (getRowRateSource(row, overrides) === "No matching rate") current.unpriced += 1;
+    groups.set(group.value, current);
+  });
+
+  const total = Array.from(groups.values()).reduce(
+    (sum, group) => sum + group.total,
+    0
+  );
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      elementCount: group.elements.size,
+      share: total > 0 ? group.total / total : 0,
+    }))
+    .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+}
+
+function ruleMatchesElement(rule, row) {
+  if (rule.elementType !== row.elementType) return false;
+  if (!rule.costGroup) return true;
+  return costGroupMatches(rule.costGroup, row.costGroup);
+}
+
+function costGroupMatches(ruleGroup, elementGroup) {
+  const rule = String(ruleGroup || "").trim();
+  const element = String(elementGroup || "").trim();
+  if (!rule || !element) return false;
+  if (rule === element) return true;
+  if (!/^\d{3}$/.test(rule) || !/^\d{3}(?:\.|$)/.test(element)) return false;
+
+  const significantPrefix = rule.replace(/0+$/, "");
+  return significantPrefix.length < rule.length && element.startsWith(significantPrefix);
+}
+
+function costGroupRuleSpecificity(costGroup) {
+  const group = String(costGroup || "").trim();
+  if (!group) return 0;
+  if (!/^\d{3}$/.test(group)) return 4;
+  return group.replace(/0+$/, "").length + 1;
+}
+
+function findRateRule(row, rules) {
+  return (
+    rules.find(
+      (rule) => rule.unit === row.unit && ruleMatchesElement(rule, row)
+    ) || null
+  );
+}
+
+function selectPreferredQuantity(rows, preferredName) {
+  const preferred = normalize(preferredName);
+
+  return rows.slice().sort((a, b) => {
+    const aExact = preferred && normalize(a.quantityName) === preferred ? 0 : 1;
+    const bExact = preferred && normalize(b.quantityName) === preferred ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+
+    const aPriority = QUANTITY_PRIORITY.indexOf(a.quantityName);
+    const bPriority = QUANTITY_PRIORITY.indexOf(b.quantityName);
+    const safeAPriority = aPriority === -1 ? QUANTITY_PRIORITY.length : aPriority;
+    const safeBPriority = bPriority === -1 ? QUANTITY_PRIORITY.length : bPriority;
+
+    return (
+      safeAPriority - safeBPriority ||
+      Number(Boolean(a.fallback)) - Number(Boolean(b.fallback)) ||
+      a.rowId.localeCompare(b.rowId)
+    );
+  })[0];
+}
+
+function makeCountCandidate(baseRow) {
+  return {
+    ...baseRow,
+    rowId: `${baseRow.elementId}-pricing-count`,
+    quantitySetId: null,
+    quantitySetName: "Cost rule",
+    quantityId: null,
+    quantityName: "ElementCount",
+    quantityType: "IFCQUANTITYCOUNT",
+    quantityValue: 1,
+    unit: "St",
+    fallback: false,
+    ruleGenerated: true,
+  };
+}
+
+function getBreakdownGroup(row, groupBy) {
+  if (groupBy === "costGroup") {
+    return {
+      value: row.costGroup || "",
+      label: row.costGroup || "Unclassified",
+    };
+  }
+
+  if (groupBy === "elementType") {
+    return { value: row.elementType, label: row.elementType };
+  }
+
+  return {
+    value: row.levelId === null ? "unassigned" : String(row.levelId),
+    label: row.level || "Unassigned",
+  };
+}
+
+export function exportCostRowsCsv(rows, overrides = {}) {
   const header = [
     "ElementId",
     "GlobalId",
@@ -245,15 +738,23 @@ export function exportCostRowsCsv(rows, overrides) {
     "Level",
     "LevelElevation",
     "CostGroup",
+    "CostGroupSource",
+    "ClassificationSystem",
+    "ClassificationCode",
+    "ClassificationName",
     "Classification",
     "FGK",
+    "PricingRule",
+    "PricingStatus",
+    "RateSource",
     "QuantitySet",
     "QuantityId",
-    "QuantityName",
+    "PricingBasis",
     "Quantity",
     "Unit",
     "UnitRateEUR",
     "TotalEUR",
+    "ExcludedQuantityRows",
     "Readiness",
   ];
 
@@ -267,8 +768,15 @@ export function exportCostRowsCsv(rows, overrides) {
       row.level,
       row.levelElevation ?? "",
       row.costGroup,
+      row.costGroupSource,
+      row.classificationSystem,
+      row.classificationCode,
+      row.classificationName,
       row.classification,
       row.fgk,
+      row.rateRuleLabel || "",
+      row.pricingStatus || "",
+      getRowRateSource(row, overrides),
       row.quantitySetName,
       row.quantityId || "",
       row.quantityName,
@@ -276,6 +784,7 @@ export function exportCostRowsCsv(rows, overrides) {
       row.unit,
       formatNumber(rate),
       formatNumber(row.quantityValue * rate),
+      row.excludedQuantityCount || 0,
       row.readiness.label,
     ]
       .map(csvCell)
@@ -290,11 +799,19 @@ export function buildCostSnapshot({
   text,
   targetFgk = "300",
   overrides = {},
+  rateLibrary = createDefaultRateLibrary(),
+  classificationMappings = createDefaultClassificationMappings(),
+  basisOverrides = {},
 }) {
-  const analysis = buildCostAnalysis(text, targetFgk);
+  const analysis = buildCostAnalysis(
+    text,
+    targetFgk,
+    classificationMappings
+  );
+  const pricedRows = applyCostRules(analysis.rows, rateLibrary, basisOverrides);
   const elements = new Map();
 
-  analysis.rows.forEach((row) => {
+  pricedRows.forEach((row) => {
     const uniqueId = row.elementGlobalId || `#${row.elementId}`;
     const rate = getRowRate(row, overrides);
     const total = row.quantityValue * rate;
@@ -312,12 +829,20 @@ export function buildCostSnapshot({
       quantityCount: 0,
       parameters: {
         "IFC Name": row.elementName || "",
-        "GlobalId": row.elementGlobalId || "",
+        GlobalId: row.elementGlobalId || "",
         "Building Storey": row.level || "Unassigned",
         "Storey Elevation": row.levelElevation ?? "",
         "Cost Group": row.costGroup || "",
-        "Classification": row.classification || "",
-        "FGK": row.fgk || "",
+        "Cost Group Source": row.costGroupSource || "",
+        "Classification System": row.classificationSystem || "",
+        "Classification Code": row.classificationCode || "",
+        "Classification Name": row.classificationName || "",
+        Classification: row.classification || "",
+        FGK: row.fgk || "",
+        "Pricing Rule": row.rateRuleLabel || "No matching rate",
+        "Pricing Basis": `${row.quantityName} (${row.unit})`,
+        "Pricing Status": row.pricingStatus,
+        "Excluded Quantity Rows": row.excludedQuantityCount || 0,
       },
     };
 
@@ -334,7 +859,7 @@ export function buildCostSnapshot({
     ...element,
     parameters: {
       ...element.parameters,
-      "Quantity Rows": element.quantityCount,
+      "Priced Work Items": element.quantityCount,
       "Total Cost EUR": formatNumber(element.totalCost),
     },
   }));
@@ -343,8 +868,8 @@ export function buildCostSnapshot({
     project_name: name || "IFC model",
     timestamp: new Date().toISOString(),
     elements: snapshotElements,
-    rows: analysis.rows,
-    summary: analysis.summary,
+    rows: pricedRows,
+    summary: summarizeCosts(pricedRows, overrides),
     totalCost: snapshotElements.reduce((sum, element) => sum + element.totalCost, 0),
   };
 }
@@ -675,11 +1200,18 @@ function makeQuantityRow({
   quantitySet,
   quantity,
   properties,
-  classification,
+  classifications = [],
+  classificationMappings = [],
 }) {
   const globalId = cleanIfcString(element.args[0]);
   const name = cleanIfcString(element.args[2]);
-  const costGroup = extractCostGroup(properties, classification);
+  const primaryClassification = classifications[0] || null;
+  const classification = primaryClassification?.display || "";
+  const costGroupResolution = resolveCostGroup(
+    properties,
+    classifications,
+    classificationMappings
+  );
   const fgk = extractFgk(properties);
   const modelRate = extractModelRate(properties);
 
@@ -697,12 +1229,52 @@ function makeQuantityRow({
     quantityValue: Number.isFinite(quantity.value) ? quantity.value : 0,
     unit: quantity.unit,
     properties,
+    classifications,
     classification,
-    costGroup,
+    classificationSystem: primaryClassification?.system || "",
+    classificationCode: primaryClassification?.code || "",
+    classificationName: primaryClassification?.name || "",
+    costGroup: costGroupResolution.costGroup,
+    costGroupSource: costGroupResolution.source,
+    costGroupMappingId: costGroupResolution.mappingId,
     fgk,
     modelRate,
     fallback: Boolean(quantity.fallback),
   };
+}
+
+function buildClassificationCatalog(rows) {
+  const catalog = new Map();
+
+  rows.forEach((row) => {
+    (row.classifications || []).forEach((classification) => {
+      const key = classificationMappingKey(
+        classification.system,
+        classification.code
+      );
+      const current = catalog.get(key) || {
+        ...classification,
+        elements: new Set(),
+      };
+      current.elements.add(row.elementId);
+      catalog.set(key, current);
+    });
+  });
+
+  return Array.from(catalog.values())
+    .map((entry) => ({
+      id: entry.id,
+      system: entry.system,
+      code: entry.code,
+      name: entry.name,
+      display: entry.display,
+      elementCount: entry.elements.size,
+    }))
+    .sort(
+      (a, b) =>
+        a.system.localeCompare(b.system) ||
+        a.code.localeCompare(b.code, undefined, { numeric: true })
+    );
 }
 
 function summarizeCostRows(rows, targetFgk) {
@@ -711,16 +1283,36 @@ function summarizeCostRows(rows, targetFgk) {
     rows.filter((row) => !row.fallback).map((row) => row.elementId)
   );
   const classifiedElements = new Set(
-    rows.filter((row) => row.costGroup || row.classification).map((row) => row.elementId)
+    rows.filter((row) => row.classification).map((row) => row.elementId)
+  );
+  const costGroupElements = new Set(
+    rows.filter((row) => row.costGroup).map((row) => row.elementId)
+  );
+  const mappedCostGroupElements = new Set(
+    rows
+      .filter((row) => row.costGroupMappingId)
+      .map((row) => row.elementId)
+  );
+  const unmappedClassificationElements = new Set(
+    rows
+      .filter((row) => row.classification && !row.costGroup)
+      .map((row) => row.elementId)
   );
   const fgkElements = new Set(rows.filter((row) => row.fgk).map((row) => row.elementId));
   const readyRows = rows.filter((row) => getReadiness(row, targetFgk).level === "ready");
+  const classificationSystems = Array.from(
+    new Set(rows.map((row) => row.classificationSystem).filter(Boolean))
+  ).sort();
 
   return {
     rows: rows.length,
     elements: elements.size,
     quantityElements: quantityElements.size,
     classifiedElements: classifiedElements.size,
+    costGroupElements: costGroupElements.size,
+    mappedCostGroupElements: mappedCostGroupElements.size,
+    unmappedClassificationElements: unmappedClassificationElements.size,
+    classificationSystems,
     fgkElements: fgkElements.size,
     readyRows: readyRows.length,
     fallbackRows: rows.filter((row) => row.fallback).length,
@@ -730,35 +1322,77 @@ function summarizeCostRows(rows, targetFgk) {
 function getReadiness(row, targetFgk) {
   const issues = [];
   if (row.fallback) issues.push("missing explicit quantity");
-  if (!row.costGroup && !row.classification) issues.push("missing cost classification");
+  if (!row.costGroup && !row.classification) {
+    issues.push("missing cost classification");
+  } else if (!row.costGroup && row.classification) {
+    issues.push("missing DIN 276 mapping");
+  }
   if (targetFgk && row.fgk && Number(row.fgk) < Number(targetFgk)) {
     issues.push(`below FGK ${targetFgk}`);
   }
 
   if (!issues.length) return { level: "ready", label: "Ready" };
-  if (issues.length === 1 && issues[0] === "missing cost classification") {
-    return { level: "review", label: "Review classification" };
+  if (
+    issues.length === 1 &&
+    ["missing cost classification", "missing DIN 276 mapping"].includes(issues[0])
+  ) {
+    return {
+      level: "review",
+      label:
+        issues[0] === "missing DIN 276 mapping"
+          ? "Map classification"
+          : "Review classification",
+    };
   }
   return { level: "incomplete", label: "Incomplete" };
 }
 
-function findDefaultRate(row) {
-  const exact = DEFAULT_RATES.find(
-    (entry) => entry.type === row.elementType && entry.unit === row.unit
-  );
-  if (exact) return exact.rate;
+function resolveCostGroup(properties, classifications, mappings) {
+  const propertyGroup = extractPropertyCostGroup(properties);
+  if (propertyGroup) {
+    return {
+      costGroup: propertyGroup,
+      source: "IFC cost-group property",
+      mappingId: "",
+    };
+  }
 
-  const typeOnly = DEFAULT_RATES.find((entry) => entry.type === row.elementType);
-  if (typeOnly) return typeOnly.rate;
+  for (const classification of classifications) {
+    if (!isDin276System(classification.system)) continue;
+    const directGroup = extractDinGroup(classification.code);
+    if (directGroup) {
+      return {
+        costGroup: directGroup,
+        source: `DIN 276 classification ${classification.code}`,
+        mappingId: "",
+      };
+    }
+  }
 
-  return 0;
+  for (const classification of classifications) {
+    const key = classificationMappingKey(
+      classification.system,
+      classification.code
+    );
+    const mapping = mappings.find(
+      (entry) =>
+        entry.active &&
+        entry.dinGroup &&
+        classificationMappingKey(entry.sourceSystem, entry.sourceCode) === key
+    );
+    if (!mapping) continue;
+
+    return {
+      costGroup: mapping.dinGroup,
+      source: `Mapped from ${classification.system} ${classification.code}`,
+      mappingId: mapping.id,
+    };
+  }
+
+  return { costGroup: "", source: "", mappingId: "" };
 }
 
-function extractCostGroup(properties, classification) {
-  const classificationText = String(classification || "");
-  const dinMatch = classificationText.match(/\b\d{3}(?:\.\d+)?\b/);
-  if (dinMatch) return dinMatch[0];
-
+function extractPropertyCostGroup(properties) {
   const hit = properties.find((property) => {
     const key = normalize(`${property.psetName} ${property.name}`);
     return (
@@ -771,7 +1405,26 @@ function extractCostGroup(properties, classification) {
     );
   });
 
-  return hit?.display || "";
+  if (!hit?.display) return "";
+  return extractDinGroup(hit.display) || String(hit.display).trim();
+}
+
+function extractDinGroup(value) {
+  return String(value || "").match(/\b\d{3}(?:\.\d+)?\b/)?.[0] || "";
+}
+
+function isDin276System(system) {
+  return normalize(system).replace(/[\s_-]+/g, "").includes("din276");
+}
+
+function classificationMappingKey(system, code) {
+  return `${normalize(system)}::${normalize(code)}`;
+}
+
+function slugify(value) {
+  return normalize(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "classification";
 }
 
 function extractFgk(properties) {
@@ -802,19 +1455,62 @@ function extractModelRate(properties) {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-function parseClassification(record) {
-  if (!record) return "";
+function parseClassification(record, records) {
+  if (!record) return null;
+
   if (record.type === "IFCCLASSIFICATIONREFERENCE") {
-    return [cleanIfcString(record.args[1]), cleanIfcString(record.args[2])]
-      .filter(Boolean)
-      .join(" ");
+    const sourceId = parseRef(record.args[3]);
+    const source = records.get(sourceId);
+    const code = cleanIfcString(record.args[1]);
+    const system =
+      cleanIfcString(source?.args?.[3]) ||
+      cleanIfcString(record.args[2]) ||
+      cleanIfcString(source?.args?.[0]) ||
+      "Classification";
+    const name =
+      cleanIfcString(record.args[4]) ||
+      cleanIfcString(record.args[2]) ||
+      code;
+    const classification = {
+      id: record.id,
+      system,
+      code,
+      name,
+      location: cleanIfcString(record.args[0]),
+    };
+    return {
+      ...classification,
+      display: formatClassification(classification),
+    };
   }
+
   if (record.type === "IFCCLASSIFICATION") {
-    return [cleanIfcString(record.args[1]), cleanIfcString(record.args[2])]
-      .filter(Boolean)
-      .join(" ");
+    const classification = {
+      id: record.id,
+      system:
+        cleanIfcString(record.args[3]) ||
+        cleanIfcString(record.args[0]) ||
+        "Classification",
+      code: "",
+      name: cleanIfcString(record.args[3]) || cleanIfcString(record.args[0]),
+      location: cleanIfcString(record.args[5]),
+    };
+    return {
+      ...classification,
+      display: formatClassification(classification),
+    };
   }
-  return "";
+
+  return null;
+}
+
+function formatClassification(classification) {
+  const identity = [classification.system, classification.code]
+    .filter(Boolean)
+    .join(" ");
+  return [identity, classification.name]
+    .filter(Boolean)
+    .join(" - ");
 }
 
 function isCostElement(record) {
@@ -873,8 +1569,27 @@ function parseRefList(value) {
 function cleanIfcString(value) {
   const text = String(value || "").trim();
   if (!text || text === "$" || text === "*") return "";
-  if (!text.startsWith("'")) return text;
-  return text.slice(1, -1).replace(/''/g, "'");
+  const unquoted = text.startsWith("'")
+    ? text.slice(1, -1).replace(/''/g, "'")
+    : text;
+  return decodeIfcText(unquoted);
+}
+
+function decodeIfcText(value) {
+  return String(value || "")
+    .replace(/\\X4\\([0-9A-F]+)\\X0\\/gi, (_, hex) =>
+      (hex.match(/.{8}/g) || [])
+        .map((chunk) => String.fromCodePoint(Number.parseInt(chunk, 16)))
+        .join("")
+    )
+    .replace(/\\X2\\([0-9A-F]+)\\X0\\/gi, (_, hex) =>
+      (hex.match(/.{4}/g) || [])
+        .map((chunk) => String.fromCodePoint(Number.parseInt(chunk, 16)))
+        .join("")
+    )
+    .replace(/\\X\\([0-9A-F]{2})/gi, (_, hex) =>
+      String.fromCodePoint(Number.parseInt(hex, 16))
+    );
 }
 
 function parseNominalValue(value) {
