@@ -671,6 +671,28 @@
   font-weight: 500;
 }
 
+.save-type-rate-button {
+  min-height: 36px;
+  border: 1px solid #1f6a55;
+  border-radius: 6px;
+  background: #e8f5ee;
+  color: #15513f;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.save-type-rate-button:hover:not(:disabled) {
+  background: #d9eee3;
+}
+
+.save-type-rate-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .cost-element-identity,
 .cost-element-total,
 .cost-element-editor-empty {

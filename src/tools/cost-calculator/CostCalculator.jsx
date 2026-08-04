@@ -52,6 +52,7 @@ const emptyFilters = {
   search: "",
   level: "",
   entityType: "",
+  ifcTypeName: "",
   unit: "",
   costGroup: "",
   quantityName: "",
@@ -363,6 +364,74 @@ function CostCalculator() {
     );
   };
 
+  const saveSelectedTypeRate = () => {
+    if (!selectedElement?.ifcTypeName) {
+      setMessage("This element has no IFC type name to target.");
+      return;
+    }
+
+    const rate = Number(
+      rowRates[selectedElement.rowId] ?? getRowRate(selectedElement, rowRates)
+    );
+    if (!Number.isFinite(rate) || rate < 0) {
+      setMessage("Enter a valid non-negative unit rate first.");
+      return;
+    }
+
+    const matchesType = (entry) =>
+      entry.elementType === selectedElement.elementType &&
+      String(entry.ifcTypeName || "").trim().toLowerCase() ===
+        selectedElement.ifcTypeName.trim().toLowerCase() &&
+      entry.unit === selectedElement.unit;
+    const typeElementCount = new Set(
+      pricedRows
+        .filter(
+          (row) =>
+            row.elementType === selectedElement.elementType &&
+            String(row.ifcTypeName || "").trim().toLowerCase() ===
+              selectedElement.ifcTypeName.trim().toLowerCase()
+        )
+        .map((row) => row.elementId)
+    ).size;
+
+    setRateLibrary((current) => {
+      const existing = current.find(matchesType);
+      if (existing) {
+        return current.map((entry) =>
+          entry.id === existing.id
+            ? {
+                ...entry,
+                label: selectedElement.ifcTypeName,
+                quantityName: selectedElement.quantityName,
+                rate,
+                active: true,
+              }
+            : entry
+        );
+      }
+
+      return current.concat({
+        id: createRateRuleId(),
+        label: selectedElement.ifcTypeName,
+        elementType: selectedElement.elementType,
+        ifcTypeName: selectedElement.ifcTypeName,
+        costGroup: "",
+        unit: selectedElement.unit,
+        quantityName: selectedElement.quantityName,
+        rate,
+        active: true,
+      });
+    });
+    setRowRates((current) => {
+      const next = { ...current };
+      delete next[selectedElement.rowId];
+      return next;
+    });
+    setMessage(
+      `Saved ${formatCurrency(rate)} per ${selectedElement.unit} for IFC type “${selectedElement.ifcTypeName}” (${typeElementCount} element${typeElementCount === 1 ? "" : "s"}).`
+    );
+  };
+
   const addRateRule = () => {
     setRateLibrary((current) => [
       ...current,
@@ -370,6 +439,7 @@ function CostCalculator() {
         id: createRateRuleId(),
         label: "New rate",
         elementType: "IFCWALL",
+        ifcTypeName: "",
         costGroup: "",
         unit: "m2",
         quantityName: "NetSideArea",
@@ -812,6 +882,18 @@ function CostCalculator() {
             </select>
               </label>
               <label>
+            IFC type
+            <select
+              value={filters.ifcTypeName}
+              onChange={(event) => updateFilter("ifcTypeName", event.target.value)}
+            >
+              <option value="">All IFC types</option>
+              {filterOptions.ifcTypeNames.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+              </label>
+              <label>
             Cost group
             <select
               value={filters.costGroup}
@@ -1182,6 +1264,9 @@ function CostCalculator() {
                       </strong>
                       <p>{selectedElement.elementName || "Unnamed element"}</p>
                       <small>
+                        {selectedElement.ifcTypeName
+                          ? `Type: ${selectedElement.ifcTypeName} · `
+                          : "No IFC type · "}
                         {selectedElement.level} · {selectedElement.costGroup
                           ? `KG ${selectedElement.costGroup}`
                           : "DIN not mapped"}
@@ -1217,6 +1302,19 @@ function CostCalculator() {
                         aria-label={`Selected element unit rate for row ${selectedElement.rowId}`}
                       />
                       <small>{selectedRateSource}</small>
+                      <button
+                        type="button"
+                        className="save-type-rate-button"
+                        onClick={saveSelectedTypeRate}
+                        disabled={!selectedElement.ifcTypeName}
+                        title={
+                          selectedElement.ifcTypeName
+                            ? `Apply this rate to all ${selectedElement.ifcTypeName} elements`
+                            : "This element has no IFC type assignment"
+                        }
+                      >
+                        Save for this IFC type
+                      </button>
                     </label>
                     <div className="cost-element-total">
                       <span>Element total</span>
@@ -1302,6 +1400,7 @@ function CostCalculator() {
                       <td>
                         <code>#{row.elementId}</code>
                         <span>{row.elementType}</span>
+                        {row.ifcTypeName && <small>Type: {row.ifcTypeName}</small>}
                         <small>{row.elementName || row.elementGlobalId || "-"}</small>
                       </td>
                       <td>
@@ -1539,15 +1638,16 @@ function CostCalculator() {
             <p className="cost-eyebrow">Saved automatically in this browser</p>
             <h2>Unit-safe pricing rules</h2>
             <p>
-              Each rule matches an IFC class to one quantity unit and preferred
-              pricing basis. The first active matching rule prices the element;
-              all alternative quantities are excluded from totals.
+              Rules can price a whole IFC class or one specific IFC type. Type
+              rules take priority over class rules; all alternative quantities
+              are excluded from totals.
             </p>
           </div>
           <div className="rate-library-summary">
             <span><strong>{rateLibrary.length}</strong> rules</span>
             <span><strong>{activeRateCount}</strong> active</span>
             <span><strong>{new Set(rateLibrary.map((entry) => entry.elementType)).size}</strong> IFC classes</span>
+            <span><strong>{rateLibrary.filter((entry) => entry.ifcTypeName).length}</strong> type rules</span>
           </div>
         </div>
 
@@ -1560,6 +1660,7 @@ function CostCalculator() {
                 <th>Active</th>
                 <th>Rule name</th>
                 <th>IFC class</th>
+                <th>IFC type (optional)</th>
                 <th>Cost group</th>
                 <th>Preferred basis</th>
                 <th>Unit</th>
@@ -1597,6 +1698,17 @@ function CostCalculator() {
                       }
                       placeholder="IFCWALL"
                       aria-label={`IFC class for ${entry.label}`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.ifcTypeName || ""}
+                      list="ifc-type-options"
+                      onChange={(event) =>
+                        updateRateRule(entry.id, "ifcTypeName", event.target.value)
+                      }
+                      placeholder="All types in class"
+                      aria-label={`IFC type for ${entry.label}`}
                     />
                   </td>
                   <td>
@@ -1655,6 +1767,11 @@ function CostCalculator() {
               ))}
             </tbody>
           </table>
+          <datalist id="ifc-type-options">
+            {filterOptions.ifcTypeNames.map((value) => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
         </div>
 
         {!rateLibrary.length && (
@@ -1903,6 +2020,7 @@ function buildFilterOptions(rows) {
       a.label.localeCompare(b.label, undefined, { numeric: true })
     ),
     entityTypes: uniqueValues("elementType"),
+    ifcTypeNames: uniqueValues("ifcTypeName"),
     costGroups: uniqueValues("costGroup"),
     quantityNames: uniqueValues("quantityName"),
     units: uniqueValues("unit"),

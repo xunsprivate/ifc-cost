@@ -46,6 +46,17 @@ test("classification mappings derive DIN 276 without replacing IFC metadata", as
   assert.match(row.costGroupSource, /^Mapped from Uniformat 342$/);
 });
 
+test("IFC type assignments are extracted from IfcRelDefinesByType", async () => {
+  const text = await readFile(sampleIfcUrl, "utf8");
+  const analysis = buildCostAnalysis(text);
+  const wall = analysis.rows.find((row) => row.elementId === 121);
+
+  assert.ok(wall);
+  assert.equal(wall.ifcTypeId, 144);
+  assert.equal(wall.ifcTypeClass, "IFCWALLTYPE");
+  assert.equal(wall.ifcTypeName, "Basiswand:WAN_IN_GIP_150");
+});
+
 test("IFC model rates remain authoritative without a library match", () => {
   const rows = applyCostRules(
     [
@@ -98,6 +109,50 @@ test("rate rules prefer the requested quantity and never import negative rates",
   assert.equal(priced.length, 1);
   assert.equal(priced[0].rowId, "wall-volume");
   assert.equal(priced[0].excludedQuantityCount, 1);
+});
+
+test("IFC type rates take priority over IFC class rates", () => {
+  const rows = [
+    makeRow({ ifcTypeName: "Basiswand:WAN_IN_GIP_150" }),
+    makeRow({
+      rowId: "wall-area-2",
+      elementId: 2,
+      ifcTypeName: "Basiswand:WAN_IN_GIP_200",
+    }),
+  ];
+  const rates = normalizeRateLibrary([
+    {
+      id: "wall-class",
+      label: "All walls",
+      elementType: "IFCWALL",
+      unit: "m2",
+      quantityName: "NetSideArea",
+      rate: 100,
+      active: true,
+    },
+    {
+      id: "wall-type",
+      label: "150 mm wall",
+      elementType: "IFCWALL",
+      ifcTypeName: "basiswand:wan_in_gip_150",
+      unit: "m2",
+      quantityName: "NetSideArea",
+      rate: 225,
+      active: true,
+    },
+  ]);
+  const priced = applyCostRules(rows, rates);
+  const typeWall = priced.find((row) => row.elementId === 1);
+  const classWall = priced.find((row) => row.elementId === 2);
+
+  assert.equal(typeWall.rateRuleId, "wall-type");
+  assert.equal(typeWall.rateRuleScope, "type");
+  assert.equal(getRowRate(typeWall), 225);
+  assert.equal(getRowRateSource(typeWall), "IFC type rate");
+  assert.equal(classWall.rateRuleId, "wall-class");
+  assert.equal(classWall.rateRuleScope, "class");
+  assert.equal(getRowRate(classWall), 100);
+  assert.equal(getRowRateSource(classWall), "IFC class rate");
 });
 
 test("pricing status filters react to manual rate overrides", () => {
@@ -193,6 +248,10 @@ function makeRow(overrides = {}) {
     elementType: "IFCWALL",
     elementGlobalId: "global-id",
     elementName: "Wall",
+    ifcTypeId: null,
+    ifcTypeClass: "",
+    ifcTypeGlobalId: "",
+    ifcTypeName: "",
     levelId: null,
     level: "Unassigned",
     levelElevation: null,

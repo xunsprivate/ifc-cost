@@ -210,7 +210,10 @@ export function mergeClassificationMappings(entries, catalog = []) {
 }
 
 export function createDefaultRateLibrary() {
-  return DEFAULT_RATE_LIBRARY.map((entry) => ({ ...entry }));
+  return DEFAULT_RATE_LIBRARY.map((entry) => ({
+    ifcTypeName: "",
+    ...entry,
+  }));
 }
 
 export function buildCostAnalysis(
@@ -220,6 +223,7 @@ export function buildCostAnalysis(
 ) {
   const { records } = parseIfcLines(text);
   const levelsByElement = buildElementLevels(records);
+  const typesByElement = buildElementTypes(records);
   const propertySets = buildPropertySets(records);
   const quantitySets = buildQuantitySets(records);
   const normalizedMappings = normalizeClassificationMappings(classificationMappings);
@@ -300,6 +304,7 @@ export function buildCostAnalysis(
             properties: propertiesByElement.get(elementId) || [],
             classifications: classificationsByElement.get(elementId) || [],
             classificationMappings: normalizedMappings,
+            ifcType: typesByElement.get(elementId),
           })
         );
       });
@@ -325,6 +330,7 @@ export function buildCostAnalysis(
         properties: propertiesByElement.get(element.id) || [],
         classifications: classificationsByElement.get(element.id) || [],
         classificationMappings: normalizedMappings,
+        ifcType: typesByElement.get(element.id),
       })
     );
   }
@@ -405,6 +411,7 @@ export function filterCostRows(rows, filters, overrides = {}) {
   const search = normalize(filters.search);
   const level = String(filters.level || "");
   const entity = normalize(filters.entityType);
+  const ifcTypeName = normalize(filters.ifcTypeName);
   const unit = normalize(filters.unit);
   const costGroup = normalize(filters.costGroup);
   const quantityName = normalize(filters.quantityName);
@@ -418,6 +425,8 @@ export function filterCostRows(rows, filters, overrides = {}) {
         row.elementType,
         row.elementGlobalId,
         row.elementName,
+        row.ifcTypeName,
+        row.ifcTypeClass,
         row.level,
         row.levelElevation,
         row.quantitySetName,
@@ -439,6 +448,7 @@ export function filterCostRows(rows, filters, overrides = {}) {
           ? row.levelId === null
           : String(row.levelId) === level)) &&
       (!entity || normalize(row.elementType).includes(entity)) &&
+      (!ifcTypeName || normalize(row.ifcTypeName) === ifcTypeName) &&
       (!unit || normalize(row.unit).includes(unit)) &&
       (!costGroup || normalize(row.costGroup).includes(costGroup)) &&
       (!quantityName || normalize(row.quantityName).includes(quantityName)) &&
@@ -461,6 +471,7 @@ export function normalizeRateLibrary(entries) {
         id: String(entry.id || `rate-${index + 1}`),
         label: String(entry.label || "Unnamed rate").trim(),
         elementType: String(entry.elementType || "").trim().toUpperCase(),
+        ifcTypeName: String(entry.ifcTypeName || "").trim(),
         costGroup: String(entry.costGroup || "").trim(),
         unit: String(entry.unit || "").trim(),
         quantityName: String(entry.quantityName || "").trim(),
@@ -492,7 +503,7 @@ export function applyCostRules(
         .filter((rule) => ruleMatchesElement(rule, baseRow))
         .sort(
           (a, b) =>
-            costGroupRuleSpecificity(b.costGroup) - costGroupRuleSpecificity(a.costGroup)
+            rateRuleSpecificity(b) - rateRuleSpecificity(a)
         );
       const candidates = elementRows.slice();
 
@@ -550,6 +561,7 @@ export function applyCostRules(
       return {
         ...selected,
         rateRuleId: rateRule?.id || "",
+        rateRuleScope: rateRule?.ifcTypeName ? "type" : rateRule ? "class" : "",
         rateRuleLabel:
           rateRule?.label || (hasModelRate ? "IFC model rate" : "No matching rate"),
         ruleRate: rateRule ? rateRule.rate : null,
@@ -594,7 +606,9 @@ export function getRowRateSource(row, overrides = {}) {
   ) {
     return "IFC model rate";
   }
-  if (row.rateRuleId) return "Rate library";
+  if (row.rateRuleId) {
+    return row.rateRuleScope === "type" ? "IFC type rate" : "IFC class rate";
+  }
   return "No matching rate";
 }
 
@@ -665,8 +679,15 @@ export function buildCostBreakdown(rows, overrides = {}, groupBy = "level") {
 
 function ruleMatchesElement(rule, row) {
   if (rule.elementType !== row.elementType) return false;
+  if (rule.ifcTypeName && normalize(rule.ifcTypeName) !== normalize(row.ifcTypeName)) {
+    return false;
+  }
   if (!rule.costGroup) return true;
   return costGroupMatches(rule.costGroup, row.costGroup);
+}
+
+function rateRuleSpecificity(rule) {
+  return (rule.ifcTypeName ? 100 : 0) + costGroupRuleSpecificity(rule.costGroup);
 }
 
 function costGroupMatches(ruleGroup, elementGroup) {
@@ -755,6 +776,7 @@ export function exportCostRowsCsv(rows, overrides = {}) {
     "ElementId",
     "GlobalId",
     "IFCType",
+    "IFCTypeName",
     "ElementName",
     "Level",
     "LevelElevation",
@@ -785,6 +807,7 @@ export function exportCostRowsCsv(rows, overrides = {}) {
       row.elementId,
       row.elementGlobalId,
       row.elementType,
+      row.ifcTypeName,
       row.elementName,
       row.level,
       row.levelElevation ?? "",
@@ -841,7 +864,7 @@ export function buildCostSnapshot({
       element_id: row.elementId,
       category: row.elementType,
       family: row.costGroup || row.classification || "Unclassified",
-      type: row.elementType,
+      type: row.ifcTypeName || row.elementType,
       level: row.level || "Unassigned",
       workset: row.classification || "No classification",
       creator: "",
@@ -850,6 +873,8 @@ export function buildCostSnapshot({
       quantityCount: 0,
       parameters: {
         "IFC Name": row.elementName || "",
+        "IFC Type Name": row.ifcTypeName || "",
+        "IFC Type Class": row.ifcTypeClass || "",
         GlobalId: row.elementGlobalId || "",
         "Building Storey": row.level || "Unassigned",
         "Storey Elevation": row.levelElevation ?? "",
@@ -1146,6 +1171,35 @@ function buildElementLevels(records) {
   return levelsByElement;
 }
 
+function buildElementTypes(records) {
+  const typesByElement = new Map();
+
+  for (const relation of records.values()) {
+    if (relation.type !== "IFCRELDEFINESBYTYPE") continue;
+
+    const typeId = parseRef(relation.args[5]);
+    const typeRecord = records.get(typeId);
+    if (!typeRecord) continue;
+
+    const typeName =
+      cleanIfcString(typeRecord.args[2]) ||
+      cleanIfcString(typeRecord.args[8]) ||
+      `${typeRecord.type} #${typeRecord.id}`;
+    const typeInfo = {
+      id: typeRecord.id,
+      className: typeRecord.type,
+      globalId: cleanIfcString(typeRecord.args[0]),
+      name: typeName,
+    };
+
+    parseRefList(relation.args[4]).forEach((elementId) => {
+      typesByElement.set(elementId, typeInfo);
+    });
+  }
+
+  return typesByElement;
+}
+
 function buildPropertySets(records) {
   const propertySets = new Map();
 
@@ -1223,9 +1277,11 @@ function makeQuantityRow({
   properties,
   classifications = [],
   classificationMappings = [],
+  ifcType = null,
 }) {
   const globalId = cleanIfcString(element.args[0]);
   const name = cleanIfcString(element.args[2]);
+  const ifcTypeName = ifcType?.name || cleanIfcString(element.args[4]);
   const primaryClassification = classifications[0] || null;
   const classification = primaryClassification?.display || "";
   const costGroupResolution = resolveCostGroup(
@@ -1242,6 +1298,10 @@ function makeQuantityRow({
     elementType: element.type,
     elementGlobalId: globalId,
     elementName: name,
+    ifcTypeId: ifcType?.id || null,
+    ifcTypeClass: ifcType?.className || "",
+    ifcTypeGlobalId: ifcType?.globalId || "",
+    ifcTypeName,
     quantitySetId: quantitySet.id,
     quantitySetName: quantitySet.name,
     quantityId: quantity.id,
